@@ -1,6 +1,7 @@
 """
-Technical indicators calculation for trading strategies.
-Fast Python implementations of common TA indicators.
+ENHANCED Technical Indicators for Trading Strategies
+Fast Python implementations with Monte Carlo, GK Volatility, Z-Score
+Complete integration for scalping optimization
 """
 import numpy as np
 import pandas as pd
@@ -253,6 +254,317 @@ class TechnicalIndicators:
         
         return vwap
 
+class EnhancedScalpingIndicators:
+    """
+    Advanced indicators specifically for scalping
+    Based on Master Prompt Phase 1, 3, 5
+    """
+    
+    # ===== PHASE 1: MONTE CARLO SIMULATION =====
+    
+    @staticmethod
+    def monte_carlo_price_simulation(
+        prices: np.ndarray,
+        n_simulations: int = 5000,
+        forecast_horizon: int = 30,
+        timeframe_minutes: int = 5
+    ) -> Dict[str, any]:
+        """
+        Monte Carlo simulation for price probability
+        
+        Args:
+            prices: Historical price array
+            n_simulations: Number of simulation paths (5000 recommended)
+            forecast_horizon: How many candles to forecast (20-30)
+            timeframe_minutes: Candle timeframe in minutes
+            
+        Returns:
+            {
+                'expected_prices': array of expected prices,
+                'confidence_bands': {70%, 90%, 95%},
+                'probability_up': probability of price going up,
+                'probability_target': probability of reaching specific targets
+            }
+        """
+        # Calculate drift and volatility from historical data
+        returns = np.diff(np.log(prices))
+        drift = np.mean(returns[-50:])  # Rolling 50-period mean
+        volatility = np.std(returns[-50:])  # Rolling volatility
+        
+        # Time delta (fraction of day)
+        dt = timeframe_minutes / 1440  # 1 day = 1440 minutes
+        
+        # Initialize simulation matrix
+        simulated_paths = np.zeros((n_simulations, forecast_horizon))
+        current_price = prices[-1]
+        
+        # Run Monte Carlo simulation
+        for i in range(n_simulations):
+            # Generate random normal samples
+            random_shocks = np.random.normal(0, 1, forecast_horizon)
+            
+            # Simulate price path
+            price_path = [current_price]
+            for t in range(forecast_horizon):
+                # Geometric Brownian Motion formula
+                next_price = price_path[-1] * np.exp(
+                    (drift - 0.5 * volatility**2) * dt + 
+                    volatility * np.sqrt(dt) * random_shocks[t]
+                )
+                price_path.append(next_price)
+            
+            simulated_paths[i] = price_path[1:]
+        
+        # Calculate statistics
+        expected_prices = np.mean(simulated_paths, axis=0)
+        
+        # Confidence bands (percentiles)
+        confidence_bands = {
+            '70%': {
+                'lower': np.percentile(simulated_paths, 15, axis=0),
+                'upper': np.percentile(simulated_paths, 85, axis=0)
+            },
+            '90%': {
+                'lower': np.percentile(simulated_paths, 5, axis=0),
+                'upper': np.percentile(simulated_paths, 95, axis=0)
+            },
+            '95%': {
+                'lower': np.percentile(simulated_paths, 2.5, axis=0),
+                'upper': np.percentile(simulated_paths, 97.5, axis=0)
+            }
+        }
+        
+        # Calculate probabilities
+        final_prices = simulated_paths[:, -1]
+        probability_up = np.sum(final_prices > current_price) / n_simulations
+        
+        # Target probabilities (1%, 2%, 3% moves)
+        target_probabilities = {
+            '+1%': np.sum(final_prices > current_price * 1.01) / n_simulations,
+            '+2%': np.sum(final_prices > current_price * 1.02) / n_simulations,
+            '+3%': np.sum(final_prices > current_price * 1.03) / n_simulations,
+            '-1%': np.sum(final_prices < current_price * 0.99) / n_simulations,
+            '-2%': np.sum(final_prices < current_price * 0.98) / n_simulations,
+            '-3%': np.sum(final_prices < current_price * 0.97) / n_simulations,
+        }
+        
+        return {
+            'expected_prices': expected_prices,
+            'confidence_bands': confidence_bands,
+            'probability_up': probability_up,
+            'target_probabilities': target_probabilities,
+            'simulated_paths': simulated_paths,  # For visualization
+            'drift': drift,
+            'volatility': volatility
+        }
+    
+    # ===== PHASE 3: GARMAN-KLASS VOLATILITY =====
+    
+    @staticmethod
+    def garman_klass_volatility(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        open: np.ndarray,
+        window: int = 20
+    ) -> np.ndarray:
+        """
+        Garman-Klass volatility estimator (more accurate than standard vol)
+        
+        Formula:
+        GK_Vol = sqrt( 0.5 * ln(H/L)^2 - (2*ln(2)-1) * ln(C/O)^2 )
+        
+        This estimator is 7.4x more efficient than close-to-close volatility
+        """
+        # Prevent division by zero
+        high = high + 1e-10
+        low = low + 1e-10
+        open = open + 1e-10
+        close = close + 1e-10
+        
+        # Calculate components
+        hl_component = 0.5 * (np.log(high / low)) ** 2
+        co_component = (2 * np.log(2) - 1) * (np.log(close / open)) ** 2
+        
+        # Garman-Klass volatility
+        gk_variance = hl_component - co_component
+        
+        # Rolling window average
+        gk_vol = pd.Series(gk_variance).rolling(window=window).mean().values
+        gk_vol = np.sqrt(np.maximum(gk_vol, 0))  # Ensure non-negative
+        
+        # Annualize (assuming 1440 minutes per day for 1m timeframe)
+        # Adjust based on your timeframe
+        gk_vol = gk_vol * np.sqrt(1440)
+        
+        return gk_vol
+    
+    @staticmethod
+    def combined_volatility_score(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        open: np.ndarray,
+        atr: np.ndarray
+    ) -> np.ndarray:
+        """
+        Combined volatility score from Master Prompt
+        
+        Formula:
+        Vol_Score = 0.6 × GK_Vol + 0.4 × ATR_Vol
+        """
+        # Garman-Klass volatility
+        gk_vol = EnhancedScalpingIndicators.garman_klass_volatility(
+            high, low, close, open
+        )
+        
+        # ATR-based volatility (normalized)
+        atr_vol = atr / close
+        
+        # Combine (60% GK, 40% ATR)
+        combined_vol = 0.6 * gk_vol + 0.4 * atr_vol
+        
+        return combined_vol
+    
+    # ===== PHASE 5: Z-SCORE MEAN REVERSION =====
+    
+    @staticmethod
+    def z_score_indicator(
+        prices: np.ndarray,
+        period: int = 20
+    ) -> Tuple[np.ndarray, Dict[str, any]]:
+        """
+        Z-Score for mean reversion scalping
+        
+        Formula:
+        Z_Score = (Current_Price - SMA) / StdDev
+        
+        Signals:
+        - Z > 2: Overbought (short signal)
+        - Z < -2: Oversold (long signal)
+        - |Z| < 0.5: No trade zone
+        
+        Returns:
+            (z_scores, signals)
+        """
+        # Calculate SMA and StdDev
+        sma = pd.Series(prices).rolling(window=period).mean().values
+        std = pd.Series(prices).rolling(window=period).std().values
+        
+        # Calculate Z-Score
+        z_scores = (prices - sma) / (std + 1e-10)  # Avoid division by zero
+        
+        # Generate signals
+        signals = {
+            'oversold': z_scores < -2,      # Long signal
+            'overbought': z_scores > 2,     # Short signal
+            'neutral': np.abs(z_scores) < 0.5,  # No trade zone
+            'moderate_long': (z_scores < -1) & (z_scores >= -2),
+            'moderate_short': (z_scores > 1) & (z_scores <= 2)
+        }
+        
+        return z_scores, signals
+    
+    @staticmethod
+    def linear_regression_slope(
+        prices: np.ndarray,
+        period: int = 10
+    ) -> np.ndarray:
+        """
+        Linear regression slope for micro-trend detection
+        Perfect for scalping!
+        
+        Formula:
+        Slope = (n×Σ(xy) - Σ(x)×Σ(y)) / (n×Σ(x²) - (Σ(x))²)
+        """
+        slopes = np.zeros(len(prices))
+        
+        for i in range(period, len(prices)):
+            window = prices[i-period:i]
+            x = np.arange(period)
+            
+            # Calculate slope using least squares
+            n = period
+            sum_x = np.sum(x)
+            sum_y = np.sum(window)
+            sum_xy = np.sum(x * window)
+            sum_x2 = np.sum(x ** 2)
+            
+            slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x ** 2)
+            slopes[i] = slope
+        
+        return slopes
+    
+    @staticmethod
+    def bollinger_squeeze_detector(
+        prices: np.ndarray,
+        period: int = 20,
+        std_dev: float = 2.0
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Bollinger Band Squeeze detection
+        Identifies consolidation before breakout
+        
+        Returns:
+            (bb_width, squeeze_signal)
+        """
+        # Calculate Bollinger Bands
+        sma = pd.Series(prices).rolling(window=period).mean().values
+        std = pd.Series(prices).rolling(window=period).std().values
+        
+        upper_band = sma + (std * std_dev)
+        lower_band = sma - (std * std_dev)
+        
+        # BB Width (normalized)
+        bb_width = (upper_band - lower_band) / (sma + 1e-10)
+        
+        # BB Width 20-period low (squeeze condition)
+        bb_width_20_low = pd.Series(bb_width).rolling(window=20).min().values
+        
+        # Squeeze signal (current width is at 20-period low)
+        squeeze_signal = bb_width <= (bb_width_20_low * 1.05)  # 5% tolerance
+        
+        return bb_width, squeeze_signal
+    
+    # ===== BONUS: KELLY POSITION SIZING =====
+    
+    @staticmethod
+    def kelly_position_size(
+        win_rate: float,
+        avg_win: float,
+        avg_loss: float,
+        account_balance: float,
+        current_volatility: float,
+        target_volatility: float = 0.02,
+        max_risk: float = 0.02
+    ) -> float:
+        """
+        Kelly Criterion position sizing with volatility adjustment
+        
+        Formula:
+        Kelly% = (Win_Rate × Avg_Win - Loss_Rate × Avg_Loss) / Avg_Win
+        
+        Adjusted for volatility:
+        Position = Kelly% × (Target_Vol / Current_Vol) × Max_Risk
+        """
+        loss_rate = 1 - win_rate
+        
+        # Kelly fraction
+        kelly_fraction = (win_rate * avg_win - loss_rate * avg_loss) / avg_win
+        
+        # Cap Kelly at 0.25 (quarter Kelly for safety)
+        kelly_fraction = min(kelly_fraction, 0.25)
+        
+        # Volatility adjustment
+        vol_adjustment = target_volatility / (current_volatility + 1e-10)
+        vol_adjustment = np.clip(vol_adjustment, 0.5, 2.0)  # Limit adjustment
+        
+        # Final position size
+        position_fraction = kelly_fraction * vol_adjustment * max_risk
+        position_size = account_balance * position_fraction
+        
+        return max(0, position_size)  # Ensure non-negative
+
 class IndicatorCalculator:
     """High-level indicator calculator with caching"""
     
@@ -428,19 +740,97 @@ class IndicatorCalculator:
         # Return average signal strength
         return sum(signals) / len(signals) if signals else 0.5
 
-# Example usage
+    def calculate_all_enhanced(self, ohlcv: pd.DataFrame) -> Dict[str, any]:
+        """
+        Calculate ALL indicators including enhanced ones
+        Combines original 12 + enhanced scalping indicators
+        
+        Args:
+            ohlcv: DataFrame with columns [timestamp, open, high, low, close, volume]
+            
+        Returns:
+            Dictionary with all indicator results including enhanced ones
+        """
+        # First calculate original indicators
+        basic_results = self.calculate_all(ohlcv)
+        
+        # Extract OHLCV arrays
+        high = ohlcv['high'].values
+        low = ohlcv['low'].values
+        close = ohlcv['close'].values
+        open_prices = ohlcv['open'].values
+        volume = ohlcv['volume'].values
+        
+        # Calculate ATR
+        atr = TechnicalIndicators.atr(high, low, close)
+        
+        # Initialize enhanced indicators calculator
+        enhanced = EnhancedScalpingIndicators()
+        
+        # 1. Monte Carlo Simulation
+        mc_result = enhanced.monte_carlo_price_simulation(close)
+        
+        # 2. Garman-Klass Volatility
+        gk_vol = enhanced.garman_klass_volatility(high, low, close, open_prices)
+        combined_vol = enhanced.combined_volatility_score(high, low, close, open_prices, atr)
+        
+        # 3. Z-Score Mean Reversion
+        z_scores, z_signals = enhanced.z_score_indicator(close)
+        
+        # 4. Linear Regression Slope
+        lr_slope = enhanced.linear_regression_slope(close)
+        
+        # 5. Bollinger Squeeze
+        bb_width, squeeze_signal = enhanced.bollinger_squeeze_detector(close)
+        
+        # Combine all results
+        combined_results = {
+            # Basic indicators
+            'basic_indicators': basic_results,
+            
+            # Enhanced indicators
+            'enhanced_indicators': {
+                # Monte Carlo
+                'mc_probability_up': mc_result['probability_up'],
+                'mc_expected_price': mc_result['expected_prices'][-1] if len(mc_result['expected_prices']) > 0 else close[-1],
+                'mc_target_probabilities': mc_result['target_probabilities'],
+                
+                # Volatility
+                'gk_volatility': gk_vol[-1] if len(gk_vol) > 0 else 0,
+                'combined_volatility': combined_vol[-1] if len(combined_vol) > 0 else 0,
+                
+                # Mean Reversion
+                'z_score': z_scores[-1] if len(z_scores) > 0 else 0,
+                'z_oversold': bool(z_signals['oversold'][-1]) if len(z_scores) > 0 else False,
+                'z_overbought': bool(z_signals['overbought'][-1]) if len(z_scores) > 0 else False,
+                
+                # Micro-trend
+                'lr_slope': lr_slope[-1] if len(lr_slope) > 0 else 0,
+                
+                # Squeeze
+                'bb_squeeze': bool(squeeze_signal[-1]) if len(squeeze_signal) > 0 else False,
+                'bb_width': bb_width[-1] if len(bb_width) > 0 else 0,
+            }
+        }
+        
+        return combined_results
+
+# Example usage and testing
 if __name__ == "__main__":
     # Create sample data
     np.random.seed(42)
     prices = np.cumsum(np.random.randn(100)) + 100
     
-    # Calculate RSI
-    rsi = TechnicalIndicators.rsi(prices, 14)
-    print(f"Latest RSI: {rsi[-1]:.2f}")
+    print("📊 TESTING TECHNICAL INDICATORS")
+    print("=" * 50)
     
-    # Calculate MACD
+    # Test basic TechnicalIndicators
+    print("\n1. BASIC INDICATORS:")
+    rsi = TechnicalIndicators.rsi(prices, 14)
+    print(f"   Latest RSI: {rsi[-1]:.2f}")
+    
     macd, signal, hist = TechnicalIndicators.macd(prices)
-    print(f"Latest MACD: {macd[-1]:.4f}, Signal: {signal[-1]:.4f}, Histogram: {hist[-1]:.4f}")
+    print(f"   Latest MACD: {macd[-1]:.4f}, Signal: {signal[-1]:.4f}, Histogram: {hist[-1]:.4f}")
     
     # Test with DataFrame
     df = pd.DataFrame({
@@ -452,9 +842,39 @@ if __name__ == "__main__":
         'volume': np.random.rand(100) * 1000
     })
     
+    # Test IndicatorCalculator
+    print("\n2. INDICATOR CALCULATOR:")
     calculator = IndicatorCalculator()
     indicators = calculator.calculate_all(df)
     
-    print("\n📊 All Indicators:")
-    for name, result in indicators.items():
-        print(f"{result.name}: {result.value:.4f}")
+    print("   Basic Indicators:")
+    for name, result in list(indicators.items())[:5]:  # Show first 5
+        print(f"   {result.name}: {result.value:.4f}")
+    
+    # Test EnhancedScalpingIndicators
+    print("\n3. ENHANCED SCALPING INDICATORS:")
+    enhanced = EnhancedScalpingIndicators()
+    
+    # Monte Carlo
+    mc = enhanced.monte_carlo_price_simulation(prices)
+    print(f"   Probability UP: {mc['probability_up']:.2%}")
+    print(f"   Target +2% probability: {mc['target_probabilities']['+2%']:.2%}")
+    
+    # Z-Score
+    z_scores, signals = enhanced.z_score_indicator(prices)
+    print(f"   Current Z-Score: {z_scores[-1]:.2f}")
+    print(f"   Oversold: {signals['oversold'][-1]}")
+    
+    # Test combined enhanced calculation
+    print("\n4. COMBINED ENHANCED CALCULATION:")
+    combined = calculator.calculate_all_enhanced(df)
+    
+    enhanced_indicators = combined['enhanced_indicators']
+    print(f"   MC Probability Up: {enhanced_indicators['mc_probability_up']:.2%}")
+    print(f"   Z-Score: {enhanced_indicators['z_score']:.2f}")
+    print(f"   GK Volatility: {enhanced_indicators['gk_volatility']:.4f}")
+    print(f"   Linear Regression Slope: {enhanced_indicators['lr_slope']:.6f}")
+    print(f"   Bollinger Squeeze: {enhanced_indicators['bb_squeeze']}")
+    
+    print("\n" + "=" * 50)
+    print("✅ All indicators successfully integrated into one file!")
