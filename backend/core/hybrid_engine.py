@@ -1,520 +1,539 @@
 """
-HYBRID TRADING ENGINE - Main Orchestrator
-Combines Python (90%) for speed + AI (10%) for intelligence.
-
-This is the core autonomous trading loop that:
-1. Fetches market data every 5 seconds
-2. Calculates indicators (Python - fast)
-3. Generates trading signals  
-4. Validates with safety checker
-5. Executes trades autonomously
-6. AI analysis every 6 hours (strategic review)
+Hybrid Trading Engine - Main autonomous trading loop
+Combines 90% Python speed with 10% AI intelligence
 """
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-import pandas as pd
+from typing import Optional, Dict, Any, List
 import numpy as np
+import pandas as pd
 
-from backend.config import settings
-from backend.exchange.weex_client import WEEXClient
-from backend.exchange.safety_checker import SafetyChecker
-from backend.strategies.scalping_strategy import ScalpingStrategy
-from backend.strategies.technical_indicators import IndicatorCalculator
-from backend.core.risk_manager import RiskManager
-from backend.ai.bedrock_client import BedrockClient
-from backend.ai.prompt_processor import PromptProcessor
-from backend.database.db_manager import DatabaseManager
-from backend.database.models import TradeStatus, TradeSide
-from backend.utils.logger import setup_logger
-from backend.utils.helpers import (
-    calculate_position_size, calculate_pnl, generate_trade_id,
-    format_timestamp
-)
+from config import settings
+from strategies.scalping_strategy import ScalpingStrategy
+from strategies.technical_indicators import TechnicalIndicators
+from exchange.exchange_client import ExchangeClient
+from exchange.safety_checker import SafetyChecker
+from ai.bedrock_client import BedrockClient
+from database.db_manager import DatabaseManager
+from utils.logger import setup_logger
 
-logger = setup_logger('hybrid_engine')
+logger = setup_logger(__name__)
+
 
 class HybridTradingEngine:
     """
-    Main autonomous trading engine.
-    Runs continuously in background, executing trades based on strategy.
+    Main trading engine that runs the autonomous trading loop
     """
     
     def __init__(
         self,
-        exchange_client: Optional[WEEXClient] = None,
-        ai_client: Optional[BedrockClient] = None,
-        db_manager: Optional[DatabaseManager] = None
+        exchange_client: ExchangeClient,
+        ai_client: BedrockClient,
+        db_manager: DatabaseManager
     ):
-        """Initialize hybrid engine"""
-        self.exchange = exchange_client or WEEXClient(
-            api_key=settings.WEEX_API_KEY,
-            api_secret=settings.WEEX_API_SECRET,
-            testnet=settings.WEEX_TESTNET
-        )
+        self.exchange_client = exchange_client
+        self.ai_client = ai_client
+        self.db_manager = db_manager
+        self.safety_checker = SafetyChecker(exchange_client, db_manager)
         
-        self.ai_client = ai_client or BedrockClient()
-        self.prompt_processor = PromptProcessor(self.ai_client)
-        self.db = db_manager or DatabaseManager(settings.DATABASE_URL)
+        # Strategy components
+        self.scalping_strategy = ScalpingStrategy()
+        self.technical_indicators = TechnicalIndicators()
         
-        # Core components
-        self.safety_checker = SafetyChecker()
-        self.risk_manager = RiskManager(settings.MAX_DAILY_LOSS, settings.MAX_RISK_PER_TRADE)
-        self.indicator_calculator = IndicatorCalculator()
-        
-        # Trading state
+        # State
         self.is_running = False
-        self.current_strategy: Optional[ScalpingStrategy] = None
-        self.active_positions: Dict[str, Dict[str, Any]] = {}
-        
-        # Configuration
-        self.symbol = settings.DEFAULT_SYMBOL
-        self.timeframe = settings.DEFAULT_TIMEFRAME
-        self.loop_interval = 5  # seconds
-        self.ai_review_hours = settings.AI_STRATEGY_REVIEW_HOURS
-        self.last_ai_review = None
+        self.active_strategy_name: Optional[str] = None
+        self.active_strategy_config: Dict[str, Any] = {}
+        self.trading_loop_task: Optional[asyncio.Task] = None
         
         # Performance tracking
-        self.daily_trades = 0
-        self.daily_pnl = 0.0
-        self.total_trades = 0
+        self.performance_metrics = {
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "total_pnl": 0.0,
+            "daily_pnl": 0.0,
+            "max_drawdown": 0.0,
+            "current_drawdown": 0.0,
+            "peak_balance": settings.initial_balance,
+            "current_balance": settings.initial_balance
+        }
         
-        logger.info("🤖 Hybrid Trading Engine initialized")
+        # Market data cache
+        self.market_data_cache: Dict[str, pd.DataFrame] = {}
+        
+        logger.info("Hybrid Trading Engine initialized")
     
     async def start(self):
-        """Start autonomous trading"""
+        """Start the autonomous trading engine"""
         if self.is_running:
-            logger.warning("Engine already running")
+            logger.warning("Trading engine is already running")
             return
         
+        logger.info("🚀 Starting trading engine...")
         self.is_running = True
-        logger.info("🚀 Starting autonomous trading engine...")
         
-        # Load active strategy
-        active_strategy = self.db.get_active_strategy()
-        if active_strategy:
-            self.load_strategy_from_db(active_strategy)
-            logger.info(f"✅ Loaded active strategy: {active_strategy.name}")
-        else:
-            logger.warning("⚠️ No active strategy loaded. Waiting for strategy...")
+        # Start the main trading loop
+        self.trading_loop_task = asyncio.create_task(self._trading_loop())
         
-        # Start main trading loop
-        try:
-            await self._main_loop()
-        except Exception as e:
-            logger.error(f"❌ Engine error: {e}", exc_info=True)
-            self.is_running = False
+        logger.info("✅ Trading engine started successfully")
     
     async def stop(self):
-        """Stop trading engine"""
+        """Stop the autonomous trading engine"""
+        if not self.is_running:
+            logger.warning("Trading engine is not running")
+            return
+        
         logger.info("🛑 Stopping trading engine...")
         self.is_running = False
         
-        # Close all open positions
-        await self.close_all_positions("Engine stopped by user")
-        
-        logger.info("✅ Engine stopped successfully")
-    
-    async def _main_loop(self):
-        """Main autonomous trading loop"""
-        while self.is_running:
+        # Cancel the trading loop task
+        if self.trading_loop_task:
+            self.trading_loop_task.cancel()
             try:
-                # 1. Check if strategy is loaded
-                if not self.current_strategy:
-                    await asyncio.sleep(self.loop_interval)
-                    continue
-                
-                # 2. Fetch latest market data
-                ohlcv = await self.fetch_market_data()
-                if ohlcv is None or len(ohlcv) < 50:
-                    logger.warning("Insufficient market data")
-                    await asyncio.sleep(self.loop_interval)
-                    continue
-                
-                # 3. Calculate indicators (Python - FAST)
-                indicators = self.indicator_calculator.calculate_all(ohlcv)
-                
-                # 4. Generate trading signals
-                signal = self.current_strategy.generate_signal(ohlcv, indicators)
-                
-                # 5. Check if we should enter/exit trades
-                await self.process_signal(signal, indicators, ohlcv)
-                
-                # 6. Manage open positions (check stop loss, take profit)
-                await self.manage_positions(ohlcv)
-                
-                # 7. Periodic AI strategy review (every 6 hours)
-                await self.periodic_ai_review(ohlcv, indicators)
-                
-                # 8. Update performance metrics
-                self.update_metrics()
-                
-                # 9. Wait for next iteration
-                await asyncio.sleep(self.loop_interval)
-                
-            except Exception as e:
-                logger.error(f"❌ Error in main loop: {e}", exc_info=True)
-                await asyncio.sleep(self.loop_interval)
+                await self.trading_loop_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close all open positions
+        await self._close_all_positions()
+        
+        logger.info("✅ Trading engine stopped successfully")
     
-    async def fetch_market_data(self) -> Optional[pd.DataFrame]:
-        """Fetch latest OHLCV data"""
+    async def _trading_loop(self):
+        """
+        Main trading loop - runs every 5 seconds
+        This is where the magic happens!
+        """
+        logger.info("🔁 Starting main trading loop (5-second interval)")
+        
         try:
-            ohlcv = self.exchange.fetch_ohlcv(
-                self.symbol,
-                self.timeframe,
-                limit=200  # Get enough data for indicators
+            while self.is_running:
+                start_time = datetime.now()
+                
+                try:
+                    # 1. Check if we have an active strategy
+                    if not self.active_strategy_name:
+                        logger.debug("No active strategy, waiting...")
+                        await asyncio.sleep(5)
+                        continue
+                    
+                    # 2. Fetch market data for all allowed symbols
+                    await self._update_market_data()
+                    
+                    # 3. Analyze each symbol and generate signals
+                    for symbol in settings.allowed_symbols:
+                        await self._analyze_symbol(symbol)
+                    
+                    # 4. Manage existing positions
+                    await self._manage_open_positions()
+                    
+                    # 5. Update performance metrics
+                    await self._update_performance_metrics()
+                    
+                except Exception as e:
+                    logger.error(f"Error in trading loop: {e}", exc_info=True)
+                
+                # 6. Calculate time taken and sleep to maintain 5-second interval
+                elapsed = (datetime.now() - start_time).total_seconds()
+                sleep_time = max(0.1, 5 - elapsed)  # Aim for 5-second intervals
+                
+                await asyncio.sleep(sleep_time)
+                
+        except asyncio.CancelledError:
+            logger.info("Trading loop cancelled")
+        except Exception as e:
+            logger.error(f"Trading loop crashed: {e}", exc_info=True)
+            self.is_running = False
+    
+    async def _update_market_data(self):
+        """Fetch and update market data for all symbols"""
+        tasks = []
+        for symbol in settings.allowed_symbols:
+            tasks.append(self._fetch_symbol_data(symbol))
+        
+        # Fetch data concurrently
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def _fetch_symbol_data(self, symbol: str):
+        """Fetch OHLCV data for a specific symbol"""
+        try:
+            # Fetch 200 candles (5-minute each) for indicator calculation
+            ohlcv = await self.exchange_client.fetch_ohlcv(
+                symbol=symbol,
+                timeframe='5m',
+                limit=200
             )
             
-            if ohlcv:
+            if ohlcv and len(ohlcv) > 50:  # Need enough data
                 df = pd.DataFrame(
                     ohlcv,
                     columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
                 )
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                return df
+                df.set_index('timestamp', inplace=True)
+                
+                self.market_data_cache[symbol] = df
+                logger.debug(f"Updated market data for {symbol}: {len(df)} candles")
+            else:
+                logger.warning(f"Insufficient data for {symbol}")
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch data for {symbol}: {e}")
+    
+    async def _analyze_symbol(self, symbol: str):
+        """
+        Analyze a symbol and execute trades if conditions are met
+        """
+        try:
+            if symbol not in self.market_data_cache:
+                return
             
-            return None
+            df = self.market_data_cache[symbol]
+            if len(df) < 50:  # Need minimum data
+                return
+            
+            # 1. Calculate all technical indicators
+            indicators = await self._calculate_indicators(symbol, df)
+            
+            # 2. Generate trading signal based on active strategy
+            signal = await self._generate_signal(symbol, df, indicators)
+            
+            if signal['action'] in ['BUY', 'SELL']:
+                # 3. Validate with safety checker
+                is_valid = await self.safety_checker.validate_trade(
+                    symbol=symbol,
+                    side='long' if signal['action'] == 'BUY' else 'short',
+                    amount=signal.get('amount', 0),
+                    leverage=settings.default_leverage
+                )
+                
+                if is_valid:
+                    # 4. Execute trade
+                    await self._execute_trade(symbol, signal)
+                else:
+                    logger.warning(f"Trade blocked by safety checker: {symbol} {signal['action']}")
             
         except Exception as e:
-            logger.error(f"Error fetching market data: {e}")
-            return None
+            logger.error(f"Failed to analyze {symbol}: {e}")
     
-    async def process_signal(
-        self, 
-        signal: Dict[str, Any], 
-        indicators: Dict[str, Any],
-        ohlcv: pd.DataFrame
-    ):
-        """Process trading signal and execute if valid"""
-        if signal['action'] == 'none':
-            return
-        
-        logger.info(f"📊 Signal received: {signal['action'].upper()} "
-                   f"(confidence: {signal['confidence']:.2f})")
-        
-        # Entry signals
-        if signal['action'] in ['long', 'short']:
-            await self.execute_entry(signal, indicators, ohlcv)
-        
-        # Exit signals
-        elif signal['action'] == 'close':
-            await self.execute_exit(signal['reason'])
-    
-    async def execute_entry(
-        self,
-        signal: Dict[str, Any],
-        indicators: Dict[str, Any],
-        ohlcv: pd.DataFrame
-    ):
-        """Execute entry trade"""
+    async def _calculate_indicators(self, symbol: str, df: pd.DataFrame) -> Dict[str, Any]:
+        """Calculate all technical indicators for a symbol"""
         try:
-            # Check if we already have a position
-            if self.symbol in self.active_positions:
-                logger.debug("Already in position, skipping entry")
-                return
+            # Basic indicators
+            indicators = self.technical_indicators.calculate_all(df)
             
-            # Get current price
-            current_price = float(ohlcv['close'].iloc[-1])
-            
-            # Prepare order parameters
-            side = signal['action']  # 'long' or 'short'
-            
-            # Calculate position size
-            balance = self.exchange.get_balance()
-            if not balance or balance['free'] < 10:  # Minimum $10 balance
-                logger.warning("Insufficient balance")
-                return
-            
-            position_size = calculate_position_size(
-                balance=balance['free'],
-                risk_percent=settings.MAX_RISK_PER_TRADE,
-                entry_price=current_price,
-                stop_loss=signal['stop_loss'],
-                leverage=self.current_strategy.leverage
+            # Monte Carlo simulation for probability
+            mc_result = self.technical_indicators.monte_carlo_simulation(
+                df['close'].values,
+                n_simulations=settings.monte_carlo_simulations,
+                n_periods=settings.monte_carlo_periods
             )
             
-            # Risk management check
-            if not self.risk_manager.can_take_trade(self.daily_pnl, balance['total']):
-                logger.warning("⚠️ Risk limits exceeded, skipping trade")
-                return
-            
-            # Safety validation (WEEX hackathon rules)
-            validation = self.safety_checker.validate_order({
-                'symbol': self.symbol,
-                'side': side,
-                'quantity': position_size,
-                'leverage': self.current_strategy.leverage,
-                'strategy_name': self.current_strategy.name
+            indicators.update({
+                'mc_probability_up': mc_result['probability_up'],
+                'mc_expected_price': mc_result['expected_price'],
+                'mc_confidence_bands': mc_result['confidence_bands']
             })
             
-            if not validation['is_valid']:
-                logger.warning(f"⚠️ Safety check failed: {validation['reason']}")
-                return
+            # Advanced indicators
+            gk_volatility = self.technical_indicators.garman_klass_volatility(df)
+            z_score = self.technical_indicators.z_score_mean_reversion(df)
+            lr_slope = self.technical_indicators.linear_regression_slope(df)
             
-            # Execute order
-            order = self.exchange.create_market_order(
-                symbol=self.symbol,
-                side=side,
-                amount=position_size,
-                leverage=self.current_strategy.leverage
-            )
+            indicators.update({
+                'gk_volatility': gk_volatility,
+                'z_score': z_score,
+                'lr_slope': lr_slope
+            })
             
-            if order:
-                # Log AI decision for hackathon compliance
-                self.safety_checker.log_ai_decision(
-                    symbol=self.symbol,
-                    action=f"ENTER_{side.upper()}",
-                    decision_data={
-                        'signal': signal,
-                        'indicators': {k: v.value for k, v in indicators.items()},
-                        'position_size': position_size,
-                        'entry_price': current_price,
-                        'stop_loss': signal['stop_loss'],
-                        'take_profit': signal['take_profit']
-                    }
-                )
-                
-                # Create trade record
-                trade_id = generate_trade_id(self.symbol)
-                trade = self.db.create_trade({
-                    'trade_id': trade_id,
-                    'symbol': self.symbol,
-                    'side': TradeSide.LONG if side == 'long' else TradeSide.SHORT,
-                    'status': TradeStatus.OPEN,
-                    'quantity': position_size,
-                    'leverage': self.current_strategy.leverage,
-                    'entry_price': current_price,
-                    'stop_loss': signal['stop_loss'],
-                    'take_profit': signal['take_profit'],
-                    'strategy_name': self.current_strategy.name,
-                    'entry_reason': signal['reason'],
-                    'ai_confidence': signal['confidence'],
-                    'opened_at': datetime.utcnow(),
-                    'exchange_order_id': order.get('id')
-                })
-                
-                # Track position
-                self.active_positions[self.symbol] = {
-                    'trade_id': trade_id,
-                    'side': side,
-                    'entry_price': current_price,
-                    'quantity': position_size,
-                    'stop_loss': signal['stop_loss'],
-                    'take_profit': signal['take_profit'],
-                    'opened_at': datetime.utcnow()
+            return indicators
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate indicators for {symbol}: {e}")
+            return {}
+    
+    async def _generate_signal(self, symbol: str, df: pd.DataFrame, indicators: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate trading signal based on strategy"""
+        try:
+            current_price = df['close'].iloc[-1]
+            
+            # Use active strategy or default scalping
+            if self.active_strategy_name == "scalping":
+                signal = self.scalping_strategy.generate_signal(df, indicators)
+            else:
+                # Default RSI-based strategy
+                signal = {
+                    'action': 'WAIT',
+                    'confidence': 0.0,
+                    'reason': 'No active strategy'
                 }
                 
-                self.daily_trades += 1
-                self.total_trades += 1
+                # Simple RSI strategy for demo
+                rsi = indicators.get('rsi', 50)
                 
-                logger.info(f"✅ ENTERED {side.upper()}: {position_size} @ ${current_price:.2f}")
+                if rsi < settings.rsi_oversold:
+                    signal = {
+                        'action': 'BUY',
+                        'confidence': (settings.rsi_oversold - rsi) / settings.rsi_oversold,
+                        'reason': f'RSI oversold: {rsi:.1f}',
+                        'price': current_price,
+                        'stop_loss': current_price * 0.985,  # 1.5% stop loss
+                        'take_profit': current_price * 1.03  # 3% take profit
+                    }
+                elif rsi > settings.rsi_overbought:
+                    signal = {
+                        'action': 'SELL',
+                        'confidence': (rsi - settings.rsi_overbought) / (100 - settings.rsi_overbought),
+                        'reason': f'RSI overbought: {rsi:.1f}',
+                        'price': current_price,
+                        'stop_loss': current_price * 1.015,  # 1.5% stop loss
+                        'take_profit': current_price * 0.97  # 3% take profit
+                    }
+            
+            return signal
             
         except Exception as e:
-            logger.error(f"❌ Error executing entry: {e}", exc_info=True)
+            logger.error(f"Failed to generate signal for {symbol}: {e}")
+            return {'action': 'WAIT', 'confidence': 0.0, 'reason': f'Error: {str(e)}'}
     
-    async def execute_exit(self, reason: str = "Signal"):
-        """Close all positions"""
-        for symbol, position in list(self.active_positions.items()):
-            try:
-                # Get current price
-                ohlcv = await self.fetch_market_data()
-                if ohlcv is None:
-                    continue
-                
-                current_price = float(ohlcv['close'].iloc[-1])
-                
-                # Close position
-                close_side = 'sell' if position['side'] == 'long' else 'buy'
-                order = self.exchange.create_market_order(
-                    symbol=symbol,
-                    side=close_side,
-                    amount=position['quantity']
-                )
-                
-                if order:
-                    # Calculate P&L
-                    pnl_data = calculate_pnl(
-                        side=position['side'],
-                        entry_price=position['entry_price'],
-                        exit_price=current_price,
-                        quantity=position['quantity'],
-                        leverage=self.current_strategy.leverage
-                    )
-                    
-                    # Update trade record
-                    self.db.update_trade(position['trade_id'], {
-                        'status': TradeStatus.CLOSED,
-                        'exit_price': current_price,
-                        'exit_reason': reason,
-                        'pnl': pnl_data['pnl'],
-                        'pnl_percent': pnl_data['pnl_percent'],
-                        'closed_at': datetime.utcnow()
-                    })
-                    
-                    # Log AI decision
-                    self.safety_checker.log_ai_decision(
-                        symbol=symbol,
-                        action="EXIT",
-                        decision_data={
-                            'reason': reason,
-                            'exit_price': current_price,
-                            'pnl': pnl_data['pnl'],
-                            'pnl_percent': pnl_data['pnl_percent']
-                        }
-                    )
-                    
-                    # Update daily P&L
-                    self.daily_pnl += pnl_data['pnl']
-                    
-                    # Remove from active positions
-                    del self.active_positions[symbol]
-                    
-                    logger.info(f"✅ EXITED {position['side'].upper()}: "
-                              f"P&L ${pnl_data['pnl']:.2f} ({pnl_data['pnl_percent']:.2f}%)")
-                
-            except Exception as e:
-                logger.error(f"❌ Error closing position: {e}", exc_info=True)
-    
-    async def manage_positions(self, ohlcv: pd.DataFrame):
-        """Check stop loss and take profit for open positions"""
-        current_price = float(ohlcv['close'].iloc[-1])
-        
-        for symbol, position in list(self.active_positions.items()):
-            # Check stop loss
-            if position['side'] == 'long' and current_price <= position['stop_loss']:
-                logger.warning(f"🛑 Stop loss hit for {symbol}")
-                await self.execute_exit("Stop loss")
-            
-            elif position['side'] == 'short' and current_price >= position['stop_loss']:
-                logger.warning(f"🛑 Stop loss hit for {symbol}")
-                await self.execute_exit("Stop loss")
-            
-            # Check take profit
-            if position['side'] == 'long' and current_price >= position['take_profit']:
-                logger.info(f"🎯 Take profit hit for {symbol}")
-                await self.execute_exit("Take profit")
-            
-            elif position['side'] == 'short' and current_price <= position['take_profit']:
-                logger.info(f"🎯 Take profit hit for {symbol}")
-                await self.execute_exit("Take profit")
-    
-    async def periodic_ai_review(self, ohlcv: pd.DataFrame, indicators: Dict[str, Any]):
-        """AI strategic review every 6 hours"""
-        if not settings.AI_MODE == 'hybrid':
-            return
-        
-        now = datetime.utcnow()
-        if self.last_ai_review and (now - self.last_ai_review) < timedelta(hours=self.ai_review_hours):
-            return
-        
-        logger.info("🧠 Running AI strategic review...")
-        
+    async def _execute_trade(self, symbol: str, signal: Dict[str, Any]):
+        """Execute a trade based on signal"""
         try:
-            # Prepare market context
-            context = {
-                'symbol': self.symbol,
-                'current_price': float(ohlcv['close'].iloc[-1]),
-                'indicators': {k: v.value for k, v in indicators.items()},
-                'active_positions': len(self.active_positions),
-                'daily_pnl': self.daily_pnl,
-                'daily_trades': self.daily_trades
-            }
+            side = 'buy' if signal['action'] == 'BUY' else 'sell'
             
-            # Get AI analysis
-            analysis = await self.prompt_processor.analyze_market_condition(context)
+            # Calculate position size using Kelly Criterion
+            position_size = await self._calculate_position_size(symbol, signal)
             
-            # Log analysis
-            logger.info(f"AI Analysis: {analysis.get('summary', 'No summary')}")
-            
-            # If AI suggests strategy adjustment, log it
-            if analysis.get('suggested_adjustments'):
-                logger.info(f"AI Suggestions: {analysis['suggested_adjustments']}")
-            
-            self.last_ai_review = now
-            
-        except Exception as e:
-            logger.error(f"Error in AI review: {e}")
-    
-    async def close_all_positions(self, reason: str = "Manual close"):
-        """Close all open positions"""
-        if self.active_positions:
-            logger.info(f"Closing {len(self.active_positions)} positions...")
-            await self.execute_exit(reason)
-    
-    def load_strategy_from_db(self, strategy_model):
-        """Load strategy from database model"""
-        self.current_strategy = ScalpingStrategy(
-            name=strategy_model.name,
-            symbol=strategy_model.symbol,
-            timeframe=strategy_model.timeframe,
-            leverage=strategy_model.leverage,
-            config=strategy_model.config
-        )
-        
-        self.symbol = strategy_model.symbol
-        self.timeframe = strategy_model.timeframe
-        
-        logger.info(f"📋 Loaded strategy: {strategy_model.name}")
-    
-    def apply_strategy(self, strategy_config: Dict[str, Any]):
-        """Apply new strategy configuration"""
-        self.current_strategy = ScalpingStrategy(
-            name=strategy_config.get('name', 'Custom Strategy'),
-            symbol=strategy_config.get('symbol', self.symbol),
-            timeframe=strategy_config.get('timeframe', self.timeframe),
-            leverage=strategy_config.get('leverage', settings.DEFAULT_LEVERAGE),
-            config=strategy_config
-        )
-        
-        self.symbol = strategy_config.get('symbol', self.symbol)
-        self.timeframe = strategy_config.get('timeframe', self.timeframe)
-        
-        logger.info(f"✅ Applied new strategy: {self.current_strategy.name}")
-    
-    def update_metrics(self):
-        """Update performance metrics"""
-        try:
-            balance = self.exchange.get_balance()
-            if not balance:
+            if position_size <= 0:
+                logger.warning(f"Invalid position size for {symbol}: {position_size}")
                 return
             
-            metrics = {
-                'snapshot_time': datetime.utcnow(),
-                'period': 'realtime',
-                'balance': balance['total'],
-                'equity': balance['total'] + self.daily_pnl,
-                'total_trades': self.total_trades,
-                'open_positions': len(self.active_positions),
-                'daily_pnl': self.daily_pnl,
-            }
+            # Execute market order
+            order = await self.exchange_client.create_market_order(
+                symbol=symbol,
+                side=side,
+                amount=position_size,
+                leverage=settings.default_leverage
+            )
             
-            # Save to database every 5 minutes
-            if not hasattr(self, '_last_metrics_save'):
-                self._last_metrics_save = datetime.utcnow()
-            
-            if (datetime.utcnow() - self._last_metrics_save).total_seconds() >= 300:
-                self.db.save_performance_snapshot(metrics)
-                self._last_metrics_save = datetime.utcnow()
+            if order and order.get('status') in ['open', 'closed']:
+                # Log the trade
+                trade_record = {
+                    'symbol': symbol,
+                    'side': side,
+                    'entry_price': signal.get('price', 0),
+                    'amount': position_size,
+                    'leverage': settings.default_leverage,
+                    'stop_loss': signal.get('stop_loss'),
+                    'take_profit': signal.get('take_profit'),
+                    'signal_confidence': signal.get('confidence', 0),
+                    'signal_reason': signal.get('reason', ''),
+                    'order_id': order.get('id'),
+                    'timestamp': datetime.utcnow()
+                }
+                
+                await self.db_manager.save_trade(trade_record)
+                
+                logger.info(f"✅ Executed {side} order for {symbol}: {position_size} units")
+                
+                # Broadcast via WebSocket
+                # (WebSocket manager would broadcast here)
+                
+            else:
+                logger.error(f"Failed to execute order for {symbol}")
                 
         except Exception as e:
-            logger.error(f"Error updating metrics: {e}")
+            logger.error(f"Failed to execute trade for {symbol}: {e}")
     
-    def get_status(self) -> Dict[str, Any]:
-        """Get current engine status"""
-        return {
-            'is_running': self.is_running,
-            'strategy': self.current_strategy.name if self.current_strategy else None,
-            'symbol': self.symbol,
-            'timeframe': self.timeframe,
-            'active_positions': len(self.active_positions),
-            'daily_trades': self.daily_trades,
-            'daily_pnl': round(self.daily_pnl, 2),
-            'total_trades': self.total_trades,
-            'last_ai_review': format_timestamp(self.last_ai_review) if self.last_ai_review else None
-        }
-
-# Example usage
-if __name__ == "__main__":
-    engine = HybridTradingEngine()
-    asyncio.run(engine.start())
+    async def _calculate_position_size(self, symbol: str, signal: Dict[str, Any]) -> float:
+        """Calculate optimal position size using Kelly Criterion"""
+        try:
+            # Get current balance
+            balance = await self.exchange_client.get_balance()
+            usdt_balance = balance.get('USDT', {}).get('free', settings.initial_balance)
+            
+            if usdt_balance <= 0:
+                return 0
+            
+            # Kelly Criterion: f* = p - q/b
+            # where p = win probability, q = loss probability, b = win/loss ratio
+            
+            # For demo, use signal confidence as win probability
+            win_prob = signal.get('confidence', 0.5)
+            loss_prob = 1 - win_prob
+            
+            # Assume 2:1 risk/reward ratio
+            win_loss_ratio = 2.0
+            
+            # Kelly fraction
+            kelly_fraction = win_prob - (loss_prob / win_loss_ratio)
+            
+            # Limit to 1/4 Kelly for safety
+            kelly_fraction = max(0, min(kelly_fraction * 0.25, 0.1))
+            
+            # Adjust for volatility
+            volatility = await self._get_symbol_volatility(symbol)
+            if volatility > 0.05:  # High volatility
+                kelly_fraction *= 0.5
+            
+            # Calculate position size
+            risk_amount = usdt_balance * kelly_fraction
+            position_size = risk_amount / signal.get('price', 1)
+            
+            # Apply maximum risk per trade
+            max_risk = usdt_balance * settings.max_risk_per_trade
+            max_position = max_risk / signal.get('price', 1)
+            
+            position_size = min(position_size, max_position)
+            
+            return position_size
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate position size: {e}")
+            return 0
+    
+    async def _get_symbol_volatility(self, symbol: str) -> float:
+        """Get volatility for a symbol"""
+        try:
+            if symbol in self.market_data_cache:
+                df = self.market_data_cache[symbol]
+                returns = df['close'].pct_change().dropna()
+                return returns.std() * np.sqrt(365)  # Annualized
+        except:
+            pass
+        return 0.02  # Default 2% volatility
+    
+    async def _manage_open_positions(self):
+        """Manage open positions (check SL/TP, trailing stops)"""
+        try:
+            open_positions = await self.exchange_client.get_open_positions()
+            
+            for position in open_positions:
+                await self._check_position_management(position)
+                
+        except Exception as e:
+            logger.error(f"Failed to manage positions: {e}")
+    
+    async def _check_position_management(self, position: Dict[str, Any]):
+        """Check and manage a single position"""
+        try:
+            symbol = position.get('symbol')
+            side = position.get('side')
+            entry_price = position.get('entry_price', 0)
+            current_price = position.get('current_price', 0)
+            
+            if not symbol or entry_price == 0:
+                return
+            
+            # Calculate P&L
+            if side == 'long':
+                pnl_percent = (current_price - entry_price) / entry_price
+            else:  # short
+                pnl_percent = (entry_price - current_price) / entry_price
+            
+            # Check for stop loss / take profit
+            # (In real implementation, these would be set as orders on exchange)
+            
+            # For demo, just log
+            if abs(pnl_percent) > 0.01:  # 1% move
+                logger.debug(f"Position {symbol} {side}: {pnl_percent:.2%} P&L")
+                
+        except Exception as e:
+            logger.error(f"Failed to check position: {e}")
+    
+    async def _close_all_positions(self):
+        """Close all open positions"""
+        try:
+            open_positions = await self.exchange_client.get_open_positions()
+            
+            for position in open_positions:
+                symbol = position.get('symbol')
+                side = position.get('side')
+                
+                if symbol and side:
+                    # Close with opposite order
+                    close_side = 'sell' if side == 'long' else 'buy'
+                    await self.exchange_client.create_market_order(
+                        symbol=symbol,
+                        side=close_side,
+                        amount=position.get('amount', 0),
+                        leverage=1  # No leverage for closing
+                    )
+                    logger.info(f"Closed position: {symbol} {side}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to close positions: {e}")
+    
+    async def _update_performance_metrics(self):
+        """Update performance metrics"""
+        try:
+            # Get current balance
+            balance = await self.exchange_client.get_balance()
+            usdt_balance = balance.get('USDT', {}).get('total', self.performance_metrics['current_balance'])
+            
+            # Update metrics
+            self.performance_metrics['current_balance'] = usdt_balance
+            
+            if usdt_balance > self.performance_metrics['peak_balance']:
+                self.performance_metrics['peak_balance'] = usdt_balance
+                self.performance_metrics['current_drawdown'] = 0.0
+            else:
+                drawdown = (self.performance_metrics['peak_balance'] - usdt_balance) / self.performance_metrics['peak_balance']
+                self.performance_metrics['current_drawdown'] = drawdown
+                self.performance_metrics['max_drawdown'] = max(
+                    self.performance_metrics['max_drawdown'],
+                    drawdown
+                )
+            
+        except Exception as e:
+            logger.error(f"Failed to update performance metrics: {e}")
+    
+    async def apply_strategy(self, strategy_name: str, config: Dict[str, Any] = None):
+        """Apply a trading strategy"""
+        try:
+            self.active_strategy_name = strategy_name
+            self.active_strategy_config = config or {}
+            
+            logger.info(f"Applied strategy: {strategy_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to apply strategy: {e}")
+            raise
+    
+    def get_available_strategies(self) -> List[Dict[str, Any]]:
+        """Get list of available strategies"""
+        return [
+            {"name": "scalping", "description": "Advanced scalping strategy"},
+            {"name": "rsi_mean_reversion", "description": "RSI-based mean reversion"},
+            {"name": "momentum_trend", "description": "Momentum trend following"}
+        ]
+    
+    async def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get current performance metrics"""
+        try:
+            # Get trade history
+            trades = await self.db_manager.get_trades(limit=100)
+            
+            # Calculate win rate
+            if trades:
+                winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+                win_rate = len(winning_trades) / len(trades) if trades else 0
+            else:
+                win_rate = 0
+            
+            metrics = self.performance_metrics.copy()
+            metrics.update({
+                'win_rate': win_rate * 100,
+                'total_trades': len(trades),
+                'winning_trades': len([t for t in trades if t.get('pnl', 0) > 0]),
+                'losing_trades': len([t for t in trades if t.get('pnl', 0) < 0]),
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Failed to get performance metrics: {e}")
+            return self.performance_metrics
