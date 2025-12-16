@@ -1,172 +1,290 @@
 """
-AWS Bedrock Client for Claude AI
-Complete implementation for AI TRADING SIGMA 
+AWS Bedrock Client - AI Integration
+Claude 3.5 Sonnet for strategy generation and chat
 """
+
 import boto3
 import json
-from typing import Optional
-from botocore.config import Config
-import asyncio
+from typing import Dict, List, Optional
+from datetime import datetime
+
+from config import settings
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
 
 class BedrockClient:
-    """AWS Bedrock client for Claude API integration"""
+    """AWS Bedrock client for Claude AI integration"""
     
-    def __init__(
-        self,
-        aws_access_key: str,
-        aws_secret_key: str,
-        region: str = "us-east-1",
-        model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    ):
-        self.model_id = model_id
-        self.region = region
-        
-        # Configure boto3 with retries
-        config = Config(
-            region_name=region,
-            retries={'max_attempts': 3, 'mode': 'adaptive'}
-        )
-        
-        # Initialize Bedrock client
+    def __init__(self):
         self.client = boto3.client(
             service_name='bedrock-runtime',
-            aws_access_key_id=aws_access_key,
-            aws_secret_access_key=aws_secret_key,
-            config=config
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
         )
+        self.model_id = settings.BEDROCK_MODEL_ID
         
-        print(f"✅ Bedrock client initialized - Region: {region}, Model: {model_id}")
+        # Load prompt templates
+        self.strategy_prompt = self._load_strategy_prompt()
+        self.analysis_prompt = self._load_analysis_prompt()
     
-    async def invoke_claude(
+    async def chat(
         self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-        max_tokens: int = 2000,
-        temperature: float = 0.7
+        message: str,
+        conversation_history: List[Dict] = None
     ) -> str:
         """
-        Invoke Claude via AWS Bedrock
+        Chat with Claude AI
         
         Args:
-            prompt: User prompt/question
-            system_prompt: System instruction (optional)
-            max_tokens: Maximum response tokens
-            temperature: Response randomness (0-1)
+            message: User message
+            conversation_history: Previous conversation
             
         Returns:
-            Claude's response text
+            AI response
         """
         try:
-            # Prepare request body
-            messages = [{"role": "user", "content": prompt}]
+            # Build messages
+            messages = conversation_history or []
+            messages.append({
+                "role": "user",
+                "content": message
+            })
             
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": messages
-            }
-            
-            if system_prompt:
-                body["system"] = system_prompt
-            
-            # Invoke Bedrock (sync call, wrapped in async)
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.invoke_model(
-                    modelId=self.model_id,
-                    body=json.dumps(body)
-                )
+            # Call Bedrock API
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 2000,
+                    "messages": messages,
+                    "temperature": 0.7
+                })
             )
             
             # Parse response
             response_body = json.loads(response['body'].read())
+            ai_message = response_body['content'][0]['text']
             
-            # Extract text
-            if 'content' in response_body and len(response_body['content']) > 0:
-                text = response_body['content'][0]['text']
-                print(f"✅ Bedrock response: {len(text)} characters")
-                return text
-            else:
-                print(f"⚠️ Unexpected response format: {response_body}")
-                return ""
+            logger.debug(f"AI response generated ({len(ai_message)} chars)")
+            
+            return ai_message
             
         except Exception as e:
-            print(f"❌ Bedrock invocation error: {e}")
-            return ""
+            logger.error(f"Bedrock chat error: {e}")
+            return f"Sorry, I encountered an error: {str(e)}"
     
-    async def test_connection(self) -> bool:
-        """Test Bedrock connection"""
-        try:
-            print("🧪 Testing Bedrock connection...")
-            
-            response = await self.invoke_claude(
-                prompt="Reply with just 'OK' if you can read this.",
-                max_tokens=10,
-                temperature=0
-            )
-            
-            if response and ("OK" in response or "ok" in response.lower()):
-                print("✅ Bedrock connection successful!")
-                return True
-            else:
-                print(f"⚠️ Unexpected response: {response}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Connection test failed: {e}")
-            return False
-    
-    def estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+    async def generate_strategy(self, prompt: str) -> Dict:
         """
-        Estimate API cost for Bedrock Claude
-        
-        Bedrock Pricing (as of 2024):
-        - Input: $0.003 per 1K tokens
-        - Output: $0.015 per 1K tokens
+        Generate trading strategy from natural language
         
         Args:
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
+            prompt: User's strategy description
             
         Returns:
-            Estimated cost in USD
+            Strategy configuration dictionary
         """
-        input_cost = (input_tokens / 1000) * 0.003
-        output_cost = (output_tokens / 1000) * 0.015
-        total_cost = input_cost + output_cost
-        
-        return round(total_cost, 4)
-
-
-# Test code
-if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    
-    load_dotenv()
-    
-    async def test():
-        client = BedrockClient(
-            aws_access_key=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-            region=os.getenv('AWS_REGION', 'us-east-1')
-        )
-        
-        # Test connection
-        success = await client.test_connection()
-        
-        if success:
-            # Test actual query
-            response = await client.invoke_claude(
-                prompt="Explain what is scalping in trading in one sentence.",
-                max_tokens=100
+        try:
+            # Build strategy generation prompt
+            full_prompt = self.strategy_prompt.format(
+                user_request=prompt,
+                allowed_symbols=settings.ALLOWED_SYMBOLS,
+                max_leverage=settings.MAX_ALLOWED_LEVERAGE,
+                current_date=datetime.utcnow().strftime("%Y-%m-%d")
             )
-            print(f"\n📝 Response: {response}")
             
-            # Estimate cost
-            cost = client.estimate_cost(input_tokens=20, output_tokens=50)
-            print(f"\n💰 Estimated cost for this call: ${cost}")
+            # Call Claude
+            messages = [{"role": "user", "content": full_prompt}]
+            
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 3000,
+                    "messages": messages,
+                    "temperature": 0.3  # Lower temperature for strategy
+                })
+            )
+            
+            response_body = json.loads(response['body'].read())
+            strategy_text = response_body['content'][0]['text']
+            
+            # Parse strategy JSON from response
+            strategy = self._parse_strategy_response(strategy_text)
+            
+            logger.info(f"Strategy generated: {strategy.get('name', 'Unnamed')}")
+            
+            return strategy
+            
+        except Exception as e:
+            logger.error(f"Strategy generation error: {e}")
+            raise
     
-    asyncio.run(test())
+    async def analyze_market(
+        self,
+        indicators: Dict,
+        symbol: str,
+        timeframe: str
+    ) -> str:
+        """
+        Get AI analysis of market conditions
+        
+        Args:
+            indicators: Current indicator values
+            symbol: Trading pair
+            timeframe: Timeframe
+            
+        Returns:
+            Market analysis text
+        """
+        try:
+            prompt = self.analysis_prompt.format(
+                symbol=symbol,
+                timeframe=timeframe,
+                indicators=json.dumps(indicators, indent=2)
+            )
+            
+            messages = [{"role": "user", "content": prompt}]
+            
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 1500,
+                    "messages": messages,
+                    "temperature": 0.5
+                })
+            )
+            
+            response_body = json.loads(response['body'].read())
+            analysis = response_body['content'][0]['text']
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Market analysis error: {e}")
+            return "Unable to generate analysis at this time."
+    
+    def _parse_strategy_response(self, response_text: str) -> Dict:
+        """Parse strategy JSON from AI response"""
+        try:
+            # Try to find JSON in response
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            
+            if start != -1 and end != 0:
+                json_text = response_text[start:end]
+                strategy = json.loads(json_text)
+                return strategy
+            else:
+                # Fallback: create basic strategy
+                return self._create_default_strategy()
+                
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse strategy JSON, using default")
+            return self._create_default_strategy()
+    
+    def _create_default_strategy(self) -> Dict:
+        """Create default strategy"""
+        return {
+            "name": "AI Generated Strategy",
+            "description": "Default scalping strategy with RSI and MACD",
+            "parameters": {
+                "symbols": [settings.DEFAULT_SYMBOL],
+                "timeframe": "5m",
+                "leverage": 10,
+                "risk_per_trade": 0.02,
+                "indicators": {
+                    "rsi_period": 14,
+                    "rsi_oversold": 30,
+                    "rsi_overbought": 70,
+                    "macd_fast": 12,
+                    "macd_slow": 26,
+                    "macd_signal": 9
+                },
+                "entry_conditions": {
+                    "long": "RSI < 30 AND MACD histogram > 0",
+                    "short": "RSI > 70 AND MACD histogram < 0"
+                },
+                "exit_conditions": {
+                    "stop_loss_atr_multiplier": 1.5,
+                    "take_profit_atr_multiplier": 2.5
+                }
+            }
+        }
+    
+    def _load_strategy_prompt(self) -> str:
+        """Load strategy generation prompt template"""
+        return """You are an expert trading strategy designer. Create a comprehensive trading strategy based on the user's request.
+
+User Request: {user_request}
+
+Constraints:
+- Allowed symbols: {allowed_symbols}
+- Maximum leverage: {max_leverage}x
+- Must follow risk management best practices
+
+Generate a complete strategy in JSON format with the following structure:
+{{
+    "name": "Strategy Name",
+    "description": "Strategy description",
+    "parameters": {{
+        "symbols": ["BTC/USDT:USDT"],
+        "timeframe": "5m",
+        "leverage": 10,
+        "risk_per_trade": 0.02,
+        "indicators": {{
+            "rsi_period": 14,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70
+        }},
+        "entry_conditions": {{
+            "long": "Conditions for long entry",
+            "short": "Conditions for short entry"
+        }},
+        "exit_conditions": {{
+            "stop_loss_atr_multiplier": 1.5,
+            "take_profit_atr_multiplier": 2.5
+        }}
+    }}
+}}
+
+Focus on creating a practical, well-balanced strategy. Current date: {current_date}"""
+    
+    def _load_analysis_prompt(self) -> str:
+        """Load market analysis prompt template"""
+        return """Analyze the current market conditions for {symbol} on {timeframe} timeframe.
+
+Current Indicators:
+{indicators}
+
+Provide a concise analysis covering:
+1. Overall market trend (bullish/bearish/neutral)
+2. Key signals from indicators
+3. Potential trading opportunities
+4. Risk factors to consider
+
+Keep the analysis brief and actionable (2-3 paragraphs maximum)."""
+    
+    def test_connection(self) -> bool:
+        """Test Bedrock connection"""
+        try:
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "Test"}],
+                    "temperature": 0.5
+                })
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Bedrock connection test failed: {e}")
+            return False
+
+
+# Export
+__all__ = ['BedrockClient']
