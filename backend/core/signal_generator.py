@@ -1,479 +1,361 @@
 """
-Trading signal generator.
-Generates entry/exit signals based on technical indicators.
+Signal Generator - Multi-Indicator Fusion
+Generates trading signals by combining 16 indicators with weighted scoring
 """
-import logging
-from typing import Dict, Any, Optional, List
-from enum import Enum
+
 import pandas as pd
-import numpy as np
+from typing import Dict, Tuple, Optional
+from datetime import datetime
 
-from backend.strategies.technical_indicators import IndicatorResult
+from strategies.technical_indicators import TechnicalIndicators
+from config import settings
+from utils.constants import (
+    TradeAction, SignalStrength, MarketCondition,
+    RSI_OVERSOLD, RSI_OVERBOUGHT, SIGNAL_WEIGHTS
+)
+from utils.logger import setup_logger, log_trade_decision
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
-class SignalType(Enum):
-    """Signal type enumeration"""
-    LONG = "long"
-    SHORT = "short"
-    CLOSE = "close"
-    NONE = "none"
-
-class SignalStrength(Enum):
-    """Signal strength levels"""
-    VERY_STRONG = 1.0
-    STRONG = 0.8
-    MODERATE = 0.6
-    WEAK = 0.4
-    VERY_WEAK = 0.2
 
 class SignalGenerator:
-    """Generates trading signals from indicators"""
+    """
+    Generate trading signals using multi-indicator fusion
+    Combines 16 indicators with probability-based weighting
+    """
     
-    def __init__(self, confidence_threshold: float = 0.6):
+    def __init__(self):
+        self.indicators = TechnicalIndicators()
+        self.signal_weights = SIGNAL_WEIGHTS
+        self.min_confidence = settings.MIN_CONFIDENCE
+    
+    def generate_signal(self, df: pd.DataFrame, symbol: str) -> Dict:
         """
-        Initialize signal generator
+        Generate comprehensive trading signal
         
         Args:
-            confidence_threshold: Minimum confidence for signal (0-1)
-        """
-        self.confidence_threshold = confidence_threshold
-        logger.info(f"Signal generator initialized (threshold: {confidence_threshold})")
-    
-    def generate_signal(
-        self,
-        indicators: Dict[str, IndicatorResult],
-        current_price: float,
-        position: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Generate trading signal from indicators
-        
-        Args:
-            indicators: Dictionary of calculated indicators
-            current_price: Current market price
-            position: Current position if any
+            df: DataFrame with OHLCV data
+            symbol: Trading pair symbol
             
         Returns:
-            Signal dictionary with action, confidence, reason, etc.
+            Dictionary with signal details
         """
-        # If we have a position, check for exit signals first
-        if position:
-            exit_signal = self._check_exit_signals(indicators, current_price, position)
-            if exit_signal['action'] != SignalType.NONE:
-                return exit_signal
         
-        # Check for entry signals
-        long_score = self._calculate_long_score(indicators, current_price)
-        short_score = self._calculate_short_score(indicators, current_price)
+        # Calculate all indicators
+        indicators = self.indicators.calculate_all(df)
         
-        # Determine action
-        if long_score > self.confidence_threshold and long_score > short_score:
-            return self._create_long_signal(indicators, current_price, long_score)
+        # Calculate long and short scores
+        long_score = self._calculate_long_score(indicators)
+        short_score = self._calculate_short_score(indicators)
         
-        elif short_score > self.confidence_threshold and short_score > long_score:
-            return self._create_short_signal(indicators, current_price, short_score)
+        # Determine action and confidence
+        action, confidence = self._determine_action(long_score, short_score)
         
-        else:
-            return self._create_no_signal(long_score, short_score)
-    
-    def _calculate_long_score(
-        self, 
-        indicators: Dict[str, IndicatorResult],
-        current_price: float
-    ) -> float:
-        """Calculate bullish signal strength (ENHANCED with scalping indicators)"""
-        scores = []
+        # Determine signal strength
+        strength = self._determine_strength(confidence)
         
-        # RSI oversold
-        if 'rsi' in indicators:
-            rsi = indicators['rsi'].value
-            if rsi < 30:
-                scores.append(1.0)
-            elif rsi < 40:
-                scores.append(0.7)
-            elif rsi < 50:
-                scores.append(0.5)
-            else:
-                scores.append(0.0)
+        # Determine market condition
+        market_condition = self._determine_market_condition(indicators)
         
-        # ENHANCED: Monte Carlo probability (NEW!)
-        if 'mc_probability' in indicators:
-            mc_prob = indicators['mc_probability'].value
-            if mc_prob > 0.65:  # 65%+ probability of going up
-                scores.append(1.0)
-            elif mc_prob > 0.55:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
+        # Generate human-readable reasoning
+        reasoning = self._generate_reasoning(indicators, action, confidence)
         
-        # ENHANCED: Z-Score mean reversion (NEW!)
-        if 'z_score' in indicators:
-            z_score = indicators['z_score'].value
-            if z_score < -2:  # Strongly oversold
-                scores.append(1.0)
-            elif z_score < -1:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
+        # Calculate risk/reward ratio
+        risk_reward = self._calculate_risk_reward(indicators, action)
         
-        # ENHANCED: Linear Regression Slope (NEW!)
-        if 'lr_slope' in indicators:
-            slope = indicators['lr_slope'].value
-            if slope > 0.5:  # Strong upward micro-trend
-                scores.append(0.9)
-            elif slope > 0:
-                scores.append(0.6)
-            else:
-                scores.append(0.2)
+        # Current price
+        current_price = df['close'].iloc[-1]
         
-        # MACD bullish
-        if 'macd' in indicators and indicators['macd'].metadata:
-            histogram = indicators['macd'].metadata.get('histogram', 0)
-            if histogram > 0:
-                scores.append(0.8)
-            else:
-                scores.append(0.2)
-        
-        # Price above EMA (bullish)
-        if 'ema_20' in indicators:
-            ema = indicators['ema_20'].value
-            if current_price > ema:
-                distance_pct = ((current_price - ema) / ema) * 100
-                if distance_pct < 2:  # Close to EMA = good entry
-                    scores.append(0.9)
-                else:
-                    scores.append(0.6)
-            else:
-                scores.append(0.3)
-        
-        # Stochastic oversold
-        if 'stochastic' in indicators:
-            stoch = indicators['stochastic'].value
-            if stoch < 20:
-                scores.append(1.0)
-            elif stoch < 30:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
-        
-        # Volume confirmation
-        if 'volume' in indicators and indicators['volume'].metadata:
-            volume_ratio = indicators['volume'].metadata.get('volume_ratio', 1.0)
-            if volume_ratio > 1.5:
-                scores.append(0.8)
-            elif volume_ratio > 1.0:
-                scores.append(0.6)
-            else:
-                scores.append(0.4)
-        
-        # ADX trend strength
-        if 'adx' in indicators:
-            adx = indicators['adx'].value
-            if adx > 25:
-                scores.append(0.8)
-            elif adx > 20:
-                scores.append(0.6)
-            else:
-                scores.append(0.4)
-        
-        return sum(scores) / len(scores) if scores else 0.0
-    
-    def _calculate_short_score(
-        self,
-        indicators: Dict[str, IndicatorResult],
-        current_price: float
-    ) -> float:
-        """Calculate bearish signal strength (ENHANCED)"""
-        scores = []
-        
-        # RSI overbought
-        if 'rsi' in indicators:
-            rsi = indicators['rsi'].value
-            if rsi > 70:
-                scores.append(1.0)
-            elif rsi > 60:
-                scores.append(0.7)
-            elif rsi > 50:
-                scores.append(0.5)
-            else:
-                scores.append(0.0)
-        
-        # ENHANCED: Monte Carlo probability
-        if 'mc_probability' in indicators:
-            mc_prob = indicators['mc_probability'].value
-            if mc_prob < 0.35:  # Low probability of going up = bearish
-                scores.append(1.0)
-            elif mc_prob < 0.45:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
-        
-        # ENHANCED: Z-Score mean reversion
-        if 'z_score' in indicators:
-            z_score = indicators['z_score'].value
-            if z_score > 2:  # Strongly overbought
-                scores.append(1.0)
-            elif z_score > 1:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
-        
-        # ENHANCED: Linear Regression Slope
-        if 'lr_slope' in indicators:
-            slope = indicators['lr_slope'].value
-            if slope < -0.5:  # Strong downward micro-trend
-                scores.append(0.9)
-            elif slope < 0:
-                scores.append(0.6)
-            else:
-                scores.append(0.2)
-        
-        # MACD bearish
-        if 'macd' in indicators and indicators['macd'].metadata:
-            histogram = indicators['macd'].metadata.get('histogram', 0)
-            if histogram < 0:
-                scores.append(0.8)
-            else:
-                scores.append(0.2)
-        
-        # Price below EMA (bearish)
-        if 'ema_20' in indicators:
-            ema = indicators['ema_20'].value
-            if current_price < ema:
-                distance_pct = ((ema - current_price) / ema) * 100
-                if distance_pct < 2:  # Close to EMA = good entry
-                    scores.append(0.9)
-                else:
-                    scores.append(0.6)
-            else:
-                scores.append(0.3)
-        
-        # Stochastic overbought
-        if 'stochastic' in indicators:
-            stoch = indicators['stochastic'].value
-            if stoch > 80:
-                scores.append(1.0)
-            elif stoch > 70:
-                scores.append(0.7)
-            else:
-                scores.append(0.3)
-        
-        # Volume confirmation
-        if 'volume' in indicators and indicators['volume'].metadata:
-            volume_ratio = indicators['volume'].metadata.get('volume_ratio', 1.0)
-            if volume_ratio > 1.5:
-                scores.append(0.8)
-            elif volume_ratio > 1.0:
-                scores.append(0.6)
-            else:
-                scores.append(0.4)
-        
-        # ADX trend strength
-        if 'adx' in indicators:
-            adx = indicators['adx'].value
-            if adx > 25:
-                scores.append(0.8)
-            elif adx > 20:
-                scores.append(0.6)
-            else:
-                scores.append(0.4)
-        
-        return sum(scores) / len(scores) if scores else 0.0
-    
-    def _check_exit_signals(
-        self,
-        indicators: Dict[str, IndicatorResult],
-        current_price: float,
-        position: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Check if we should exit current position"""
-        side = position.get('side', 'long')
-        entry_price = position.get('entry_price', current_price)
-        
-        # Calculate current P&L
-        if side == 'long':
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        else:
-            pnl_pct = ((entry_price - current_price) / entry_price) * 100
-        
-        # Exit reasons
-        exit_reasons = []
-        
-        # 1. RSI extreme reversal
-        if 'rsi' in indicators:
-            rsi = indicators['rsi'].value
-            if side == 'long' and rsi > 75:
-                exit_reasons.append("RSI overbought")
-            elif side == 'short' and rsi < 25:
-                exit_reasons.append("RSI oversold")
-        
-        # 2. MACD reversal
-        if 'macd' in indicators and indicators['macd'].metadata:
-            histogram = indicators['macd'].metadata.get('histogram', 0)
-            if side == 'long' and histogram < 0:
-                exit_reasons.append("MACD bearish crossover")
-            elif side == 'short' and histogram > 0:
-                exit_reasons.append("MACD bullish crossover")
-        
-        # 3. Take quick profit if significant gain
-        if pnl_pct > 3:  # 3% profit
-            exit_reasons.append(f"Quick profit target ({pnl_pct:.2f}%)")
-        
-        # 4. EMA crossover
-        if 'ema_9' in indicators and 'ema_20' in indicators:
-            ema_9 = indicators['ema_9'].value
-            ema_20 = indicators['ema_20'].value
-            
-            if side == 'long' and ema_9 < ema_20:
-                exit_reasons.append("EMA bearish crossover")
-            elif side == 'short' and ema_9 > ema_20:
-                exit_reasons.append("EMA bullish crossover")
-        
-        if exit_reasons:
-            return {
-                'action': SignalType.CLOSE.value,
-                'confidence': 0.8,
-                'reason': ', '.join(exit_reasons),
-                'pnl_percent': pnl_pct
-            }
-        
-        return self._create_no_signal(0, 0)
-    
-    def _create_long_signal(
-        self,
-        indicators: Dict[str, IndicatorResult],
-        current_price: float,
-        confidence: float
-    ) -> Dict[str, Any]:
-        """Create long entry signal"""
-        # Calculate stop loss and take profit
-        atr = indicators.get('atr')
-        atr_value = atr.value if atr else current_price * 0.02
-        
-        stop_loss = current_price - (atr_value * 1.5)
-        take_profit = current_price + (atr_value * 2.5)
-        
-        # Build reason
-        reasons = []
-        if 'rsi' in indicators and indicators['rsi'].value < 40:
-            reasons.append(f"RSI oversold ({indicators['rsi'].value:.1f})")
-        if 'macd' in indicators and indicators['macd'].metadata.get('histogram', 0) > 0:
-            reasons.append("MACD bullish")
-        if 'stochastic' in indicators and indicators['stochastic'].value < 30:
-            reasons.append("Stochastic oversold")
-        
-        return {
-            'action': SignalType.LONG.value,
+        # Create signal object
+        signal = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'symbol': symbol,
+            'action': action,
             'confidence': confidence,
-            'entry_price': current_price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'reason': ', '.join(reasons) if reasons else "Multiple bullish indicators",
-            'risk_reward_ratio': (take_profit - current_price) / (current_price - stop_loss)
-        }
-    
-    def _create_short_signal(
-        self,
-        indicators: Dict[str, IndicatorResult],
-        current_price: float,
-        confidence: float
-    ) -> Dict[str, Any]:
-        """Create short entry signal"""
-        # Calculate stop loss and take profit
-        atr = indicators.get('atr')
-        atr_value = atr.value if atr else current_price * 0.02
-        
-        stop_loss = current_price + (atr_value * 1.5)
-        take_profit = current_price - (atr_value * 2.5)
-        
-        # Build reason
-        reasons = []
-        if 'rsi' in indicators and indicators['rsi'].value > 60:
-            reasons.append(f"RSI overbought ({indicators['rsi'].value:.1f})")
-        if 'macd' in indicators and indicators['macd'].metadata.get('histogram', 0) < 0:
-            reasons.append("MACD bearish")
-        if 'stochastic' in indicators and indicators['stochastic'].value > 70:
-            reasons.append("Stochastic overbought")
-        
-        return {
-            'action': SignalType.SHORT.value,
-            'confidence': confidence,
-            'entry_price': current_price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'reason': ', '.join(reasons) if reasons else "Multiple bearish indicators",
-            'risk_reward_ratio': (current_price - take_profit) / (stop_loss - current_price)
-        }
-    
-    def _create_no_signal(self, long_score: float, short_score: float) -> Dict[str, Any]:
-        """Create no-action signal"""
-        return {
-            'action': SignalType.NONE.value,
-            'confidence': 0.0,
-            'reason': f"No clear signal (Long: {long_score:.2f}, Short: {short_score:.2f})",
+            'strength': strength,
+            'current_price': current_price,
             'long_score': long_score,
-            'short_score': short_score
+            'short_score': short_score,
+            'indicators': indicators,
+            'market_condition': market_condition,
+            'reasoning': reasoning,
+            'risk_reward': risk_reward,
+            'stop_loss': self._calculate_stop_loss(current_price, indicators, action),
+            'take_profit': self._calculate_take_profit(current_price, indicators, action, risk_reward)
         }
+        
+        # Log decision for compliance
+        if action in [TradeAction.ENTER_LONG, TradeAction.ENTER_SHORT]:
+            log_trade_decision(
+                symbol=symbol,
+                action=action,
+                price=current_price,
+                indicators=indicators,
+                reasoning=reasoning,
+                confidence=confidence,
+                risk_reward=risk_reward
+            )
+        
+        logger.debug(f"Signal generated: {action} with {confidence:.2f} confidence")
+        
+        return signal
     
-    def backtest_signals(
+    def _calculate_long_score(self, indicators: Dict[str, float]) -> float:
+        """Calculate long (buy) score from indicators"""
+        score = 0.0
+        
+        # RSI - Oversold
+        if indicators['rsi'] < RSI_OVERSOLD:
+            score += self.signal_weights['rsi'] * 1.0
+        elif indicators['rsi'] < 40:
+            score += self.signal_weights['rsi'] * 0.5
+        
+        # MACD - Bullish crossover
+        if indicators['macd_histogram'] > 0:
+            score += self.signal_weights['macd'] * 1.0
+        elif indicators['macd_histogram'] > -5:
+            score += self.signal_weights['macd'] * 0.3
+        
+        # Stochastic - Oversold
+        if indicators['stoch_k'] < 20:
+            score += self.signal_weights['stochastic'] * 1.0
+        elif indicators['stoch_k'] < 40:
+            score += self.signal_weights['stochastic'] * 0.5
+        
+        # Bollinger Bands - Price near lower band
+        if indicators['bb_lower'] > 0:
+            bb_position = (indicators['bb_middle'] - indicators['bb_lower']) / indicators['bb_width']
+            if bb_position < 0.3:
+                score += self.signal_weights['bollinger'] * 1.0
+        
+        # EMA - Bullish alignment
+        if indicators['ema_9'] > indicators['ema_20']:
+            score += self.signal_weights['ema'] * 0.5
+        if indicators['ema_20'] > indicators['ema_50']:
+            score += self.signal_weights['ema'] * 0.5
+        
+        # ADX - Strong trend
+        if indicators['adx'] > 25:
+            score += self.signal_weights['adx'] * 0.5
+        
+        # Monte Carlo - High probability of upward movement
+        if indicators['mc_probability'] > 0.6:
+            score += self.signal_weights['monte_carlo'] * 1.0
+        elif indicators['mc_probability'] > 0.5:
+            score += self.signal_weights['monte_carlo'] * 0.5
+        
+        # Z-Score - Oversold
+        if indicators['z_score'] < -1.5:
+            score += self.signal_weights['z_score'] * 1.0
+        elif indicators['z_score'] < -0.5:
+            score += self.signal_weights['z_score'] * 0.5
+        
+        # Linear Regression Slope - Upward trend
+        if indicators['lr_slope'] > 0.001:
+            score += self.signal_weights['lr_slope'] * 1.0
+        elif indicators['lr_slope'] > 0:
+            score += self.signal_weights['lr_slope'] * 0.5
+        
+        return min(score, 1.0)  # Cap at 1.0
+    
+    def _calculate_short_score(self, indicators: Dict[str, float]) -> float:
+        """Calculate short (sell) score from indicators"""
+        score = 0.0
+        
+        # RSI - Overbought
+        if indicators['rsi'] > RSI_OVERBOUGHT:
+            score += self.signal_weights['rsi'] * 1.0
+        elif indicators['rsi'] > 60:
+            score += self.signal_weights['rsi'] * 0.5
+        
+        # MACD - Bearish crossover
+        if indicators['macd_histogram'] < 0:
+            score += self.signal_weights['macd'] * 1.0
+        elif indicators['macd_histogram'] < 5:
+            score += self.signal_weights['macd'] * 0.3
+        
+        # Stochastic - Overbought
+        if indicators['stoch_k'] > 80:
+            score += self.signal_weights['stochastic'] * 1.0
+        elif indicators['stoch_k'] > 60:
+            score += self.signal_weights['stochastic'] * 0.5
+        
+        # Bollinger Bands - Price near upper band
+        if indicators['bb_upper'] > 0:
+            bb_position = (indicators['bb_upper'] - indicators['bb_middle']) / indicators['bb_width']
+            if bb_position < 0.3:
+                score += self.signal_weights['bollinger'] * 1.0
+        
+        # EMA - Bearish alignment
+        if indicators['ema_9'] < indicators['ema_20']:
+            score += self.signal_weights['ema'] * 0.5
+        if indicators['ema_20'] < indicators['ema_50']:
+            score += self.signal_weights['ema'] * 0.5
+        
+        # ADX - Strong trend
+        if indicators['adx'] > 25:
+            score += self.signal_weights['adx'] * 0.5
+        
+        # Monte Carlo - High probability of downward movement
+        if indicators['mc_probability'] < 0.4:
+            score += self.signal_weights['monte_carlo'] * 1.0
+        elif indicators['mc_probability'] < 0.5:
+            score += self.signal_weights['monte_carlo'] * 0.5
+        
+        # Z-Score - Overbought
+        if indicators['z_score'] > 1.5:
+            score += self.signal_weights['z_score'] * 1.0
+        elif indicators['z_score'] > 0.5:
+            score += self.signal_weights['z_score'] * 0.5
+        
+        # Linear Regression Slope - Downward trend
+        if indicators['lr_slope'] < -0.001:
+            score += self.signal_weights['lr_slope'] * 1.0
+        elif indicators['lr_slope'] < 0:
+            score += self.signal_weights['lr_slope'] * 0.5
+        
+        return min(score, 1.0)  # Cap at 1.0
+    
+    def _determine_action(self, long_score: float, short_score: float) -> Tuple[TradeAction, float]:
+        """Determine trading action based on scores"""
+        
+        # Calculate confidence as the difference between scores
+        if long_score > short_score:
+            confidence = long_score
+            if confidence >= settings.SIGNAL_LONG_THRESHOLD:
+                return TradeAction.ENTER_LONG, confidence
+        elif short_score > long_score:
+            confidence = short_score
+            if confidence >= settings.SIGNAL_SHORT_THRESHOLD:
+                return TradeAction.ENTER_SHORT, confidence
+        
+        # Default to WAIT if no clear signal
+        return TradeAction.WAIT, max(long_score, short_score)
+    
+    def _determine_strength(self, confidence: float) -> SignalStrength:
+        """Determine signal strength"""
+        if confidence >= 0.8:
+            return SignalStrength.STRONG_BUY if confidence > 0 else SignalStrength.STRONG_SELL
+        elif confidence >= 0.65:
+            return SignalStrength.BUY if confidence > 0 else SignalStrength.SELL
+        else:
+            return SignalStrength.NEUTRAL
+    
+    def _determine_market_condition(self, indicators: Dict[str, float]) -> MarketCondition:
+        """Determine current market condition"""
+        
+        # High ADX = Trending
+        if indicators['adx'] > 30:
+            if indicators['ema_9'] > indicators['ema_50']:
+                return MarketCondition.TRENDING_UP
+            else:
+                return MarketCondition.TRENDING_DOWN
+        
+        # High volatility
+        if indicators['gk_volatility'] > 0.5:
+            return MarketCondition.VOLATILE
+        
+        # Low ADX = Ranging
+        if indicators['adx'] < 20:
+            return MarketCondition.RANGING
+        
+        return MarketCondition.UNCERTAIN
+    
+    def _generate_reasoning(
         self,
-        ohlcv: pd.DataFrame,
-        indicators_series: List[Dict[str, IndicatorResult]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Backtest signal generation on historical data
+        indicators: Dict[str, float],
+        action: TradeAction,
+        confidence: float
+    ) -> str:
+        """Generate human-readable reasoning"""
         
-        Args:
-            ohlcv: Historical OHLCV data
-            indicators_series: List of indicator dictionaries for each candle
-            
-        Returns:
-            List of generated signals
-        """
-        signals = []
+        reasons = []
         
-        for i in range(len(ohlcv)):
-            if i >= len(indicators_series):
-                break
-            
-            current_price = ohlcv.iloc[i]['close']
-            indicators = indicators_series[i]
-            
-            signal = self.generate_signal(indicators, current_price, None)
-            
-            if signal['action'] != SignalType.NONE.value:
-                signal['timestamp'] = ohlcv.iloc[i]['timestamp']
-                signal['price'] = current_price
-                signals.append(signal)
+        # RSI
+        if indicators['rsi'] < 30:
+            reasons.append("RSI oversold")
+        elif indicators['rsi'] > 70:
+            reasons.append("RSI overbought")
         
-        return signals
+        # MACD
+        if indicators['macd_histogram'] > 5:
+            reasons.append("Strong bullish MACD")
+        elif indicators['macd_histogram'] < -5:
+            reasons.append("Strong bearish MACD")
+        
+        # Monte Carlo
+        if indicators['mc_probability'] > 0.65:
+            reasons.append(f"{indicators['mc_probability']*100:.0f}% probability upward")
+        elif indicators['mc_probability'] < 0.35:
+            reasons.append(f"{(1-indicators['mc_probability'])*100:.0f}% probability downward")
+        
+        # Z-Score
+        if abs(indicators['z_score']) > 2:
+            reasons.append("Extreme mean reversion signal")
+        
+        # Linear Regression
+        if abs(indicators['lr_slope']) > 0.002:
+            reasons.append("Strong momentum shift")
+        
+        if not reasons:
+            reasons.append("Multiple weak signals")
+        
+        return " + ".join(reasons)
+    
+    def _calculate_risk_reward(
+        self,
+        indicators: Dict[str, float],
+        action: TradeAction
+    ) -> float:
+        """Calculate risk/reward ratio"""
+        
+        atr = indicators['atr']
+        if atr == 0:
+            return 2.0  # Default
+        
+        # Use ATR-based calculation
+        stop_distance = atr * settings.DEFAULT_STOP_LOSS_ATR_MULTIPLIER
+        target_distance = atr * settings.DEFAULT_TAKE_PROFIT_ATR_MULTIPLIER
+        
+        return target_distance / stop_distance if stop_distance > 0 else 2.0
+    
+    def _calculate_stop_loss(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        action: TradeAction
+    ) -> float:
+        """Calculate stop loss price"""
+        
+        atr = indicators['atr']
+        stop_distance = atr * 1.5  # 1.5x ATR
+        
+        if action == TradeAction.ENTER_LONG:
+            return current_price - stop_distance
+        elif action == TradeAction.ENTER_SHORT:
+            return current_price + stop_distance
+        
+        return current_price
+    
+    def _calculate_take_profit(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        action: TradeAction,
+        risk_reward: float
+    ) -> float:
+        """Calculate take profit price"""
+        
+        atr = indicators['atr']
+        target_distance = atr * 2.5  # 2.5x ATR
+        
+        if action == TradeAction.ENTER_LONG:
+            return current_price + target_distance
+        elif action == TradeAction.ENTER_SHORT:
+            return current_price - target_distance
+        
+        return current_price
 
-# Example usage
-if __name__ == "__main__":
-    from backend.strategies.technical_indicators import IndicatorCalculator
-    
-    # Create sample data
-    dates = pd.date_range('2024-01-01', periods=100, freq='5T')
-    prices = np.cumsum(np.random.randn(100)) + 100
-    
-    df = pd.DataFrame({
-        'timestamp': dates,
-        'open': prices,
-        'high': prices + np.random.rand(100),
-        'low': prices - np.random.rand(100),
-        'close': prices,
-        'volume': np.random.rand(100) * 1000
-    })
-    
-    # Calculate indicators
-    calculator = IndicatorCalculator()
-    indicators = calculator.calculate_all(df)
-    
-    # Generate signal
-    generator = SignalGenerator(confidence_threshold=0.6)
-    signal = generator.generate_signal(indicators, prices[-1], None)
-    
-    print(f"📊 Signal: {signal['action'].upper()}")
-    print(f"   Confidence: {signal['confidence']:.2f}")
-    print(f"   Reason: {signal['reason']}")
+
+# Export
+__all__ = ['SignalGenerator']
