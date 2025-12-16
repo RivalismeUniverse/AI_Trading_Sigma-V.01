@@ -1,128 +1,169 @@
 """
-Configuration management for AI Trading SIGMA
+Configuration Management for AI Trading SIGMA
+Handles all environment variables and application settings
 """
+
 import os
-from typing import Optional, List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
+from pydantic import Field
 
 
 class Settings(BaseSettings):
-    """Application settings"""
+    """Application settings from environment variables"""
     
-    # App
-    app_name: str = "AI Trading SIGMA"
-    debug: bool = True
-    log_level: str = "INFO"
+    # Application
+    APP_NAME: str = "AI Trading SIGMA"
+    APP_VERSION: str = "1.0.0"
+    DEBUG: bool = Field(default=False)
+    HOST: str = Field(default="0.0.0.0")
+    PORT: int = Field(default=8000)
     
     # AWS Bedrock
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    aws_region: str = "us-east-1"
-    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    AWS_ACCESS_KEY_ID: str = Field(default="")
+    AWS_SECRET_ACCESS_KEY: str = Field(default="")
+    AWS_REGION: str = Field(default="us-east-1")
+    BEDROCK_MODEL_ID: str = Field(default="anthropic.claude-3-5-sonnet-20241022-v2:0")
     
-    # Exchanges
-    binance_testnet_api_key: Optional[str] = None
-    binance_testnet_api_secret: Optional[str] = None
-    binance_testnet: bool = True
+    # Exchange Selection
+    EXCHANGE: str = Field(default="weex")  # "weex" or "binance"
     
-    weex_api_key: Optional[str] = None
-    weex_api_secret: Optional[str] = None
-    weex_testnet: bool = True
+    # WEEX Exchange
+    WEEX_API_KEY: str = Field(default="")
+    WEEX_API_SECRET: str = Field(default="")
+    WEEX_TESTNET: bool = Field(default=True)
+    WEEX_BASE_URL: Optional[str] = Field(default=None)
     
-    # Trading
-    default_symbol: str = "BTC/USDT"
-    allowed_symbols: List[str] = Field(
-        default=[
-            "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-            "ADA/USDT", "XRP/USDT", "DOGE/USDT", "LTC/USDT"
-        ]
-    )
-    default_leverage: int = 10
-    max_leverage: int = 20
-    max_risk_per_trade: float = 0.02  # 2%
-    max_daily_loss: float = 0.05  # 5%
-    initial_balance: float = 10000
+    # Binance Exchange
+    BINANCE_API_KEY: str = Field(default="")
+    BINANCE_API_SECRET: str = Field(default="")
+    BINANCE_TESTNET: bool = Field(default=True)
+    
+    # Trading Settings
+    DEFAULT_SYMBOL: str = Field(default="BTC/USDT:USDT")
+    DEFAULT_LEVERAGE: int = Field(default=10)
+    DEFAULT_TIMEFRAME: str = Field(default="5m")
+    MAX_LEVERAGE: int = Field(default=20)
     
     # Risk Management
-    stop_loss_atr_multiplier: float = 1.5
-    take_profit_atr_multiplier: float = 2.5
-    trailing_stop_activation: float = 0.5  # 0.5% profit
-    trailing_stop_distance: float = 0.3  # 0.3% below peak
+    MAX_RISK_PER_TRADE: float = Field(default=0.02)  # 2% per trade
+    MAX_DAILY_LOSS: float = Field(default=0.05)  # 5% daily loss limit
+    MAX_OPEN_POSITIONS: int = Field(default=3)
+    KELLY_FRACTION: float = Field(default=0.25)  # Conservative Kelly
     
-    # Indicators
-    rsi_period: int = 14
-    rsi_oversold: int = 30
-    rsi_overbought: int = 70
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
-    bollinger_period: int = 20
-    bollinger_std: float = 2.0
-    ema_short: int = 9
-    ema_medium: int = 20
-    ema_long: int = 50
+    # Strategy Settings
+    RSI_PERIOD: int = Field(default=14)
+    RSI_OVERSOLD: float = Field(default=30.0)
+    RSI_OVERBOUGHT: float = Field(default=70.0)
     
-    # Monte Carlo
-    monte_carlo_simulations: int = 1000
-    monte_carlo_periods: int = 20
+    MACD_FAST: int = Field(default=12)
+    MACD_SLOW: int = Field(default=26)
+    MACD_SIGNAL: int = Field(default=9)
+    
+    BB_PERIOD: int = Field(default=20)
+    BB_STD: float = Field(default=2.0)
+    
+    # Monte Carlo Settings
+    MC_SIMULATIONS: int = Field(default=1000)
+    MC_HORIZON: int = Field(default=12)  # 12 periods (1 hour for 5m)
+    MC_CONFIDENCE: float = Field(default=0.65)  # 65% probability threshold
+    
+    # Signal Generation
+    SIGNAL_LONG_THRESHOLD: float = Field(default=0.6)
+    SIGNAL_SHORT_THRESHOLD: float = Field(default=0.6)
+    MIN_CONFIDENCE: float = Field(default=0.55)
+    
+    # Execution
+    TRADE_CYCLE_SECONDS: int = Field(default=5)
+    ORDER_TIMEOUT: int = Field(default=30)
+    MAX_SLIPPAGE: float = Field(default=0.001)  # 0.1%
     
     # Database
-    database_url: str = "sqlite+aiosqlite:///./trading.db"
+    DATABASE_URL: str = Field(default="sqlite:///./trading_data.db")
     
-    # Frontend
-    frontend_url: str = "http://localhost:3000"
+    # Logging
+    LOG_LEVEL: str = Field(default="INFO")
+    LOG_FILE: str = Field(default="logs/trading_bot.log")
+    COMPLIANCE_LOG_DIR: str = Field(default="logs/hackathon")
     
-    # Paths
-    log_dir: str = "./logs"
-    data_dir: str = "./data"
+    # Hackathon Compliance
+    ALLOWED_SYMBOLS: List[str] = Field(default=[
+        'ADA/USDT:USDT',
+        'SOL/USDT:USDT',
+        'LTC/USDT:USDT',
+        'DOGE/USDT:USDT',
+        'BTC/USDT:USDT',
+        'ETH/USDT:USDT',
+        'XRP/USDT:USDT',
+        'BNB/USDT:USDT'
+    ])
+    MIN_TRADES_REQUIRED: int = Field(default=10)
+    MAX_ALLOWED_LEVERAGE: int = Field(default=20)
+    
+    # CORS
+    CORS_ORIGINS: List[str] = Field(default=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000"
+    ])
     
     class Config:
         env_file = ".env"
-        case_sensitive = False
-    
-    @property
-    def exchange_to_use(self) -> str:
-        """Determine which exchange to use based on configuration"""
-        if self.binance_testnet_api_key and self.binance_testnet:
-            return "binance_testnet"
-        elif self.weex_api_key:
-            return "weex"
-        else:
-            return "binance_testnet"  # Default for testing
-    
-    @property
-    def is_testnet(self) -> bool:
-        """Check if we're using testnet"""
-        if self.exchange_to_use == "binance_testnet":
-            return True
-        elif self.exchange_to_use == "weex":
-            return self.weex_testnet
-        return True
-    
-    def get_exchange_config(self) -> dict:
-        """Get exchange configuration"""
-        if self.exchange_to_use == "binance_testnet":
-            return {
-                "apiKey": self.binance_testnet_api_key,
-                "secret": self.binance_testnet_api_secret,
-                "enableRateLimit": True,
-                "options": {"defaultType": "future"},
-                "urls": {
-                    "api": {
-                        "public": "https://testnet.binancefuture.com/fapi/v1",
-                        "private": "https://testnet.binancefuture.com/fapi/v1",
-                    }
-                }
-            }
-        else:  # WEEX
-            return {
-                "apiKey": self.weex_api_key,
-                "secret": self.weex_secret,
-                "enableRateLimit": True,
-                "options": {"defaultType": "swap"}
-            }
+        env_file_encoding = "utf-8"
+        case_sensitive = True
 
 
 # Global settings instance
 settings = Settings()
+
+
+# Validation functions
+def validate_exchange_config() -> bool:
+    """Validate exchange configuration"""
+    if settings.EXCHANGE == "weex":
+        if not settings.WEEX_API_KEY or not settings.WEEX_API_SECRET:
+            raise ValueError("WEEX API credentials not configured")
+    elif settings.EXCHANGE == "binance":
+        if not settings.BINANCE_API_KEY or not settings.BINANCE_API_SECRET:
+            raise ValueError("Binance API credentials not configured")
+    else:
+        raise ValueError(f"Unknown exchange: {settings.EXCHANGE}")
+    return True
+
+
+def validate_aws_config() -> bool:
+    """Validate AWS Bedrock configuration"""
+    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+        raise ValueError("AWS credentials not configured")
+    return True
+
+
+def get_exchange_config() -> dict:
+    """Get current exchange configuration"""
+    if settings.EXCHANGE == "weex":
+        return {
+            "type": "weex",
+            "api_key": settings.WEEX_API_KEY,
+            "api_secret": settings.WEEX_API_SECRET,
+            "testnet": settings.WEEX_TESTNET,
+            "base_url": settings.WEEX_BASE_URL
+        }
+    elif settings.EXCHANGE == "binance":
+        return {
+            "type": "binance",
+            "api_key": settings.BINANCE_API_KEY,
+            "api_secret": settings.BINANCE_API_SECRET,
+            "testnet": settings.BINANCE_TESTNET
+        }
+    else:
+        raise ValueError(f"Unknown exchange: {settings.EXCHANGE}")
+
+
+# Export commonly used settings
+__all__ = [
+    'settings',
+    'Settings',
+    'validate_exchange_config',
+    'validate_aws_config',
+    'get_exchange_config'
+    ]
