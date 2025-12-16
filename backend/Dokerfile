@@ -1,89 +1,41 @@
-# ===== AI TRADING SIGMA - Backend Dockerfile =====
-# Multi-stage build for optimized production image
-
-# ===== BUILD STAGE =====
-FROM python:3.11-slim as builder
+# AI Trading SIGMA - Backend Dockerfile
+FROM python:3.9-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# ===== RUNTIME STAGE =====
-FROM python:3.11-slim
-
 # Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Create app user
-RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app/logs /app/data && \
-    chown -R appuser:appuser /app
-
-# Set working directory
-WORKDIR /app
-
-# Install runtime dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    libpq5 \
+    gcc \
+    g++ \
+    git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY --chown=appuser:appuser . .
+COPY . .
 
 # Create necessary directories
-RUN mkdir -p logs/hackathon data/historical data/backtest_results
-
-# Switch to non-root user
-USER appuser
+RUN mkdir -p logs/hackathon data/historical
 
 # Expose port
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Default command
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-# ===== BUILD INSTRUCTIONS =====
-# Build: docker build -t weex-bot-backend .
-# Run: docker run -p 8000:8000 --env-file .env weex-bot-backend
-# Dev: docker run -p 8000:8000 -v $(pwd):/app --env-file .env weex-bot-backend
-
-# ===== PRODUCTION OPTIMIZATIONS =====
-# 1. Use --no-cache-dir for pip to reduce image size
-# 2. Multi-stage build to exclude build tools
-# 3. Run as non-root user for security
-# 4. Health check for container orchestration
-# 5. Minimal base image (slim instead of full)
-
-# ===== ENVIRONMENT VARIABLES NEEDED =====
-# - AWS_ACCESS_KEY_ID
-# - AWS_SECRET_ACCESS_KEY
-# - AWS_REGION
-# - WEEX_API_KEY
-# - WEEX_API_SECRET
-# - WEEX_TESTNET
-# - DATABASE_URL
-# - (See .env.example for complete list)
+# Run application
+CMD ["python", "main.py"]
