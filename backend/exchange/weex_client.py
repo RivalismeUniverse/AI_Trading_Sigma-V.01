@@ -1,358 +1,312 @@
 """
-WEEX Exchange API Client
-Complete implementation using CCXT
+WEEX Exchange Client
+Implementation for WEEX (WOO X) exchange
 """
-import ccxt
-import pandas as pd
-from typing import Dict, List, Optional
-import asyncio
 
-class WEEXClient:
-    """WEEX Exchange API wrapper using CCXT"""
+import ccxt.async_support as ccxt
+from typing import Dict, List, Optional, Any
+import pandas as pd
+from datetime import datetime
+
+from .base_client import BaseExchangeClient
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+
+class WEEXClient(BaseExchangeClient):
+    """WEEX Exchange Client using CCXT"""
     
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        testnet: bool = True
+        api_key: str,
+        api_secret: str,
+        testnet: bool = True,
+        base_url: Optional[str] = None
     ):
-        self.testnet = testnet
+        super().__init__(api_key, api_secret, testnet)
+        self.exchange_name = "WEEX"
+        self.base_url = base_url
         
-        # Initialize CCXT exchange
+    async def initialize(self):
+        """Initialize WEEX exchange connection"""
         try:
-            self.exchange = ccxt.woo({  # WOO X (WEEX)
-                'apiKey': api_key or 'dummy_key',
-                'secret': api_secret or 'dummy_secret',
+            # Initialize CCXT exchange
+            self.exchange = ccxt.woo({
+                'apiKey': self.api_key,
+                'secret': self.api_secret,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'swap',  # For futures/perpetuals
+                    'defaultType': 'swap',  # Perpetual futures
                 }
             })
             
-            if testnet:
+            # Set testnet if enabled
+            if self.testnet:
                 self.exchange.set_sandbox_mode(True)
-                print("✅ WEEX Client initialized in TESTNET mode")
-            else:
-                print("✅ WEEX Client initialized in LIVE mode")
+                if self.base_url:
+                    self.exchange.urls['api'] = self.base_url
             
-            self.markets = None
+            # Load markets
+            await self.exchange.load_markets()
+            
+            logger.info(f"WEEX client initialized (testnet={self.testnet})")
             
         except Exception as e:
-            print(f"⚠️ WEEX initialization warning: {e}")
-            print("📝 Using demo mode - no real trading")
+            logger.error(f"Failed to initialize WEEX client: {e}")
+            raise
     
-    async def load_markets(self):
-        """Load available markets"""
+    async def fetch_balance(self) -> Dict[str, Any]:
+        """Fetch account balance"""
         try:
-            loop = asyncio.get_event_loop()
-            self.markets = await loop.run_in_executor(
-                None,
-                self.exchange.load_markets
-            )
-            print(f"✅ Loaded {len(self.markets)} markets")
-            return True
-        except Exception as e:
-            print(f"❌ Error loading markets: {e}")
-            return False
-    
-    async def get_balance(self) -> float:
-        """Get USDT balance"""
-        try:
-            loop = asyncio.get_event_loop()
-            balance = await loop.run_in_executor(
-                None,
-                self.exchange.fetch_balance
-            )
+            balance = await self.exchange.fetch_balance()
             
-            usdt_balance = balance.get('USDT', {}).get('free', 0.0)
-            print(f"💰 Balance: ${usdt_balance:.2f} USDT")
-            return float(usdt_balance)
+            # Extract relevant information
+            total_balance = balance.get('USDT', {}).get('total', 0)
+            free_balance = balance.get('USDT', {}).get('free', 0)
+            used_balance = balance.get('USDT', {}).get('used', 0)
             
+            return {
+                'total': total_balance,
+                'free': free_balance,
+                'used': used_balance,
+                'currency': 'USDT',
+                'timestamp': datetime.utcnow().isoformat()
+            }
         except Exception as e:
-            print(f"❌ Balance fetch error: {e}")
-            # Return demo balance for testing
-            return 10000.0
+            logger.error(f"Failed to fetch balance: {e}")
+            raise
     
-    async def get_market_data(
+    async def fetch_ohlcv(
         self,
-        symbol: str = 'BTC/USDT',
-        timeframe: str = '5m',
-        limit: int = 100
+        symbol: str,
+        timeframe: str = "5m",
+        limit: int = 200
     ) -> pd.DataFrame:
-        """
-        Get OHLCV market data
-        
-        Args:
-            symbol: Trading pair
-            timeframe: Candle timeframe (1m, 5m, 15m, 1h, etc.)
-            limit: Number of candles
-            
-        Returns:
-            DataFrame with OHLCV data
-        """
+        """Fetch OHLCV data"""
         try:
-            loop = asyncio.get_event_loop()
-            ohlcv = await loop.run_in_executor(
-                None,
-                lambda: self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            # Fetch raw OHLCV
+            ohlcv = await self.exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit
             )
             
-            if not ohlcv:
-                print(f"⚠️ No data returned for {symbol}")
-                return pd.DataFrame()
+            # Standardize format
+            df = self.standardize_ohlcv(ohlcv)
             
-            # Convert to DataFrame
-            df = pd.DataFrame(
-                ohlcv,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            # Calculate ATR for later use
-            df['tr'] = df[['high', 'low']].apply(
-                lambda x: x['high'] - x['low'], axis=1
-            )
-            df['atr'] = df['tr'].rolling(window=14).mean()
-            
-            print(f"📊 Fetched {len(df)} candles for {symbol} ({timeframe})")
+            logger.debug(f"Fetched {len(df)} candles for {symbol}")
             return df
             
         except Exception as e:
-            print(f"❌ Market data error: {e}")
-            # Return demo data for testing
-            return self._generate_demo_data(limit)
+            logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+            raise
     
-    async def get_current_price(self, symbol: str = 'BTC/USDT') -> float:
-        """Get current market price"""
+    async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Fetch current ticker"""
         try:
-            loop = asyncio.get_event_loop()
-            ticker = await loop.run_in_executor(
-                None,
-                lambda: self.exchange.fetch_ticker(symbol)
-            )
+            ticker = await self.exchange.fetch_ticker(symbol)
             
-            price = float(ticker['last'])
-            return price
-            
+            return {
+                'symbol': symbol,
+                'last': ticker.get('last'),
+                'bid': ticker.get('bid'),
+                'ask': ticker.get('ask'),
+                'high': ticker.get('high'),
+                'low': ticker.get('low'),
+                'volume': ticker.get('volume'),
+                'timestamp': ticker.get('timestamp')
+            }
         except Exception as e:
-            print(f"❌ Price fetch error: {e}")
-            return 45000.0  # Demo price
+            logger.error(f"Failed to fetch ticker for {symbol}: {e}")
+            raise
     
-    async def place_order(
+    async def create_market_order(
         self,
         symbol: str,
         side: str,
-        quantity: float,
-        price: Optional[float] = None,
-        order_type: str = 'limit',
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None
-    ) -> Dict:
-        """
-        Place order on WEEX
-        
-        Args:
-            symbol: Trading pair (e.g., 'BTC/USDT')
-            side: 'buy' or 'sell'
-            quantity: Order size
-            price: Limit price (None for market orders)
-            order_type: 'limit' or 'market'
-            stop_loss: Stop loss price (optional)
-            take_profit: Take profit price (optional)
-            
-        Returns:
-            Order details dict
-        """
+        amount: float,
+        params: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Create market order"""
         try:
-            print(f"\n{'='*50}")
-            print(f"📤 PLACING ORDER")
-            print(f"{'='*50}")
-            print(f"Symbol: {symbol}")
-            print(f"Side: {side.upper()}")
-            print(f"Quantity: {quantity}")
-            print(f"Price: ${price:.2f}" if price else "Market Price")
-            if stop_loss:
-                print(f"Stop Loss: ${stop_loss:.2f}")
-            if take_profit:
-                print(f"Take Profit: ${take_profit:.2f}")
-            print(f"{'='*50}\n")
+            params = params or {}
             
-            loop = asyncio.get_event_loop()
+            order = await self.exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side=side,
+                amount=amount,
+                params=params
+            )
             
-            # Place main order
-            if order_type == 'market':
-                order = await loop.run_in_executor(
-                    None,
-                    lambda: self.exchange.create_market_order(
-                        symbol=symbol,
-                        side=side.lower(),
-                        amount=quantity
-                    )
-                )
-            else:
-                order = await loop.run_in_executor(
-                    None,
-                    lambda: self.exchange.create_limit_order(
-                        symbol=symbol,
-                        side=side.lower(),
-                        amount=quantity,
-                        price=price
-                    )
-                )
-            
-            print(f"✅ Main order placed - ID: {order.get('id', 'demo')}")
-            
-            # Add stop loss and take profit info to order dict
-            order['stop_loss'] = stop_loss
-            order['take_profit'] = take_profit
-            order['quantity'] = quantity
-            
+            logger.info(f"Market order created: {side} {amount} {symbol}")
             return order
             
         except Exception as e:
-            print(f"❌ Order placement error: {e}")
-            # Return demo order for testing
-            return {
-                'id': 'demo_order_12345',
-                'symbol': symbol,
-                'side': side,
-                'quantity': quantity,
-                'price': price or 45000.0,
-                'status': 'open',
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'timestamp': pd.Timestamp.now()
-            }
+            logger.error(f"Failed to create market order: {e}")
+            raise
     
-    async def get_order_status(self, order_id: str, symbol: str) -> Dict:
-        """Get order status"""
+    async def create_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: float,
+        params: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Create limit order"""
         try:
-            loop = asyncio.get_event_loop()
-            order = await loop.run_in_executor(
-                None,
-                lambda: self.exchange.fetch_order(order_id, symbol)
+            params = params or {}
+            
+            order = await self.exchange.create_order(
+                symbol=symbol,
+                type='limit',
+                side=side,
+                amount=amount,
+                price=price,
+                params=params
             )
+            
+            logger.info(f"Limit order created: {side} {amount} {symbol} @ {price}")
             return order
             
         except Exception as e:
-            print(f"❌ Order status error: {e}")
-            # Return demo status
-            return {
-                'id': order_id,
-                'status': 'closed',
-                'filled': 1.0,
-                'average': 45100.0
-            }
+            logger.error(f"Failed to create limit order: {e}")
+            raise
     
-    async def cancel_order(self, order_id: str, symbol: str) -> bool:
-        """Cancel an order"""
+    async def create_stop_loss_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        stop_price: float,
+        params: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Create stop loss order"""
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.exchange.cancel_order(order_id, symbol)
+            params = params or {}
+            params['stopPrice'] = stop_price
+            
+            order = await self.exchange.create_order(
+                symbol=symbol,
+                type='stop_market',
+                side=side,
+                amount=amount,
+                params=params
             )
-            print(f"✅ Order {order_id} cancelled")
-            return True
+            
+            logger.info(f"Stop loss created: {side} {amount} {symbol} @ {stop_price}")
+            return order
             
         except Exception as e:
-            print(f"❌ Cancel order error: {e}")
-            return False
+            logger.error(f"Failed to create stop loss order: {e}")
+            raise
+    
+    async def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
+        """Cancel order"""
+        try:
+            result = await self.exchange.cancel_order(order_id, symbol)
+            logger.info(f"Order cancelled: {order_id}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order_id}: {e}")
+            raise
+    
+    async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
+        """Fetch open orders"""
+        try:
+            orders = await self.exchange.fetch_open_orders(symbol)
+            logger.debug(f"Fetched {len(orders)} open orders")
+            return orders
+        except Exception as e:
+            logger.error(f"Failed to fetch open orders: {e}")
+            raise
+    
+    async def fetch_positions(self, symbol: Optional[str] = None) -> List[Dict]:
+        """Fetch open positions"""
+        try:
+            positions = await self.exchange.fetch_positions(symbol)
+            
+            # Filter out positions with zero size
+            active_positions = [
+                pos for pos in positions
+                if float(pos.get('contracts', 0)) > 0
+            ]
+            
+            logger.debug(f"Fetched {len(active_positions)} active positions")
+            return active_positions
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch positions: {e}")
+            raise
+    
+    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """Set leverage for symbol"""
+        try:
+            result = await self.exchange.set_leverage(leverage, symbol)
+            logger.info(f"Leverage set to {leverage}x for {symbol}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to set leverage: {e}")
+            raise
+    
+    async def fetch_my_trades(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """Fetch recent trades"""
+        try:
+            trades = await self.exchange.fetch_my_trades(symbol, limit=limit)
+            logger.debug(f"Fetched {len(trades)} trades")
+            return trades
+        except Exception as e:
+            logger.error(f"Failed to fetch trades: {e}")
+            raise
     
     async def close_position(
         self,
         symbol: str,
-        side: str,
-        quantity: float
-    ) -> Dict:
-        """Close a position (opposite side market order)"""
-        close_side = 'sell' if side.lower() == 'buy' else 'buy'
-        
-        return await self.place_order(
-            symbol=symbol,
-            side=close_side,
-            quantity=quantity,
-            order_type='market'
-        )
+        side: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Close position"""
+        try:
+            # Fetch current position
+            positions = await self.fetch_positions(symbol)
+            
+            if not positions:
+                logger.warning(f"No position found for {symbol}")
+                return {"status": "no_position"}
+            
+            position = positions[0]
+            position_side = position.get('side')
+            amount = abs(float(position.get('contracts', 0)))
+            
+            # Determine close side (opposite of position)
+            close_side = 'sell' if position_side == 'long' else 'buy'
+            
+            # Close position with market order
+            result = await self.create_market_order(
+                symbol=symbol,
+                side=close_side,
+                amount=amount,
+                params={'reduceOnly': True}
+            )
+            
+            logger.info(f"Position closed: {symbol} {position_side}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to close position: {e}")
+            raise
     
-    def _generate_demo_data(self, limit: int) -> pd.DataFrame:
-        """Generate demo OHLCV data for testing"""
-        import numpy as np
-        
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=limit, freq='5min')
-        
-        # Generate realistic price movement
-        base_price = 45000
-        returns = np.random.normal(0, 0.002, limit)
-        prices = base_price * (1 + returns).cumprod()
-        
-        df = pd.DataFrame({
-            'open': prices,
-            'high': prices * (1 + np.random.uniform(0, 0.005, limit)),
-            'low': prices * (1 - np.random.uniform(0, 0.005, limit)),
-            'close': prices * (1 + np.random.normal(0, 0.001, limit)),
-            'volume': np.random.uniform(100, 1000, limit)
-        }, index=dates)
-        
-        # Calculate ATR
-        df['tr'] = df['high'] - df['low']
-        df['atr'] = df['tr'].rolling(window=14).mean()
-        
-        print("📊 Generated demo data for testing")
-        return df
+    async def close(self):
+        """Close exchange connection"""
+        if self.exchange:
+            await self.exchange.close()
+            logger.info("WEEX client connection closed")
 
 
-# Test code
-if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    
-    load_dotenv()
-    
-    async def test():
-        # Initialize client (testnet)
-        client = WEEXClient(
-            api_key=os.getenv('WEEX_API_KEY'),
-            api_secret=os.getenv('WEEX_API_SECRET'),
-            testnet=True
-        )
-        
-        print("\n" + "="*50)
-        print("TEST 1: Get Balance")
-        print("="*50)
-        balance = await client.get_balance()
-        
-        print("\n" + "="*50)
-        print("TEST 2: Get Market Data")
-        print("="*50)
-        data = await client.get_market_data('BTC/USDT', '5m', 50)
-        print(f"\nData shape: {data.shape}")
-        print(f"Latest price: ${data['close'].iloc[-1]:.2f}")
-        print(f"\nLast 5 candles:")
-        print(data[['open', 'high', 'low', 'close', 'volume']].tail())
-        
-        print("\n" + "="*50)
-        print("TEST 3: Get Current Price")
-        print("="*50)
-        price = await client.get_current_price('BTC/USDT')
-        print(f"Current BTC price: ${price:.2f}")
-        
-        print("\n" + "="*50)
-        print("TEST 4: Place Demo Order")
-        print("="*50)
-        order = await client.place_order(
-            symbol='BTC/USDT',
-            side='buy',
-            quantity=0.001,
-            price=price,
-            order_type='limit',
-            stop_loss=price * 0.98,
-            take_profit=price * 1.02
-        )
-        print(f"\nOrder result: {order}")
-        
-        print("\n✅ All tests completed!")
-    
-    asyncio.run(test())
+# Export
+__all__ = ['WEEXClient']
