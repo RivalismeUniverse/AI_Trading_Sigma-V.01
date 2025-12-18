@@ -1,503 +1,308 @@
 """
-Database manager for CRUD operations.
-Handles all database interactions using SQLAlchemy.
+Database Manager - CRUD Operations
+Handles all database operations for the trading system
 """
-from sqlalchemy import create_engine, desc, and_, or_, func
+
+from sqlalchemy import create_engine, desc
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional, Dict, Any
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-import logging
 
-from .models import (
-    Base, Trade, TradingSignal, Strategy, PerformanceMetric,
-    AIInteraction, SystemLog, TradeStatus, TradeSide
-)
+from database.models import Base, Trade, Strategy, PerformanceMetric, Signal, ComplianceLog, ChatHistory
+from config import settings
+from utils.logger import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
+
 
 class DatabaseManager:
-    """Manages all database operations"""
+    """Database operations manager"""
     
-    def __init__(self, database_url: str = "sqlite:///trading_bot.db"):
-        """
-        Initialize database manager
-        
-        Args:
-            database_url: SQLAlchemy database URL
-        """
-        self.engine = create_engine(database_url, echo=False)
+    def __init__(self, database_url: str = None):
+        self.database_url = database_url or settings.DATABASE_URL
+        self.engine = create_engine(self.database_url, echo=False)
         self.SessionLocal = sessionmaker(bind=self.engine)
-        
-        # Create tables if they don't exist
+    
+    def create_tables(self):
+        """Create all database tables"""
         Base.metadata.create_all(self.engine)
-        
-        logger.info(f"Database initialized: {database_url}")
+        logger.info("Database tables created")
     
     def get_session(self) -> Session:
         """Get database session"""
         return self.SessionLocal()
     
-    # ===== TRADE OPERATIONS =====
+    # ========================================================================
+    # TRADE OPERATIONS
+    # ========================================================================
     
-    def create_trade(self, trade_data: Dict[str, Any]) -> Trade:
-        """Create new trade record"""
+    def save_trade(self, trade_data: Dict) -> int:
+        """Save trade to database"""
         session = self.get_session()
         try:
             trade = Trade(**trade_data)
             session.add(trade)
             session.commit()
-            session.refresh(trade)
-            logger.info(f"Created trade: {trade.trade_id}")
-            return trade
-        except SQLAlchemyError as e:
+            trade_id = trade.id
+            logger.debug(f"Trade saved: {trade_id}")
+            return trade_id
+        except Exception as e:
             session.rollback()
-            logger.error(f"Error creating trade: {e}")
+            logger.error(f"Failed to save trade: {e}")
             raise
         finally:
             session.close()
     
-    def get_trade(self, trade_id: str) -> Optional[Trade]:
-        """Get trade by ID"""
+    def update_trade(self, trade_id: int, updates: Dict):
+        """Update existing trade"""
         session = self.get_session()
         try:
-            return session.query(Trade).filter(Trade.trade_id == trade_id).first()
-        finally:
-            session.close()
-    
-    def update_trade(self, trade_id: str, updates: Dict[str, Any]) -> Optional[Trade]:
-        """Update trade"""
-        session = self.get_session()
-        try:
-            trade = session.query(Trade).filter(Trade.trade_id == trade_id).first()
+            trade = session.query(Trade).filter(Trade.id == trade_id).first()
             if trade:
                 for key, value in updates.items():
                     setattr(trade, key, value)
                 session.commit()
-                session.refresh(trade)
-                logger.info(f"Updated trade: {trade_id}")
-            return trade
-        except SQLAlchemyError as e:
+                logger.debug(f"Trade updated: {trade_id}")
+        except Exception as e:
             session.rollback()
-            logger.error(f"Error updating trade: {e}")
+            logger.error(f"Failed to update trade: {e}")
             raise
         finally:
             session.close()
     
-    def get_open_trades(self, symbol: Optional[str] = None) -> List[Trade]:
-        """Get all open trades"""
+    def get_trades(self, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Get trade history"""
         session = self.get_session()
         try:
-            query = session.query(Trade).filter(Trade.status == TradeStatus.OPEN)
-            if symbol:
-                query = query.filter(Trade.symbol == symbol)
-            return query.all()
+            trades = session.query(Trade).order_by(desc(Trade.entry_time)).limit(limit).offset(offset).all()
+            return [self._trade_to_dict(t) for t in trades]
         finally:
             session.close()
     
-    def get_recent_trades(self, limit: int = 50, symbol: Optional[str] = None) -> List[Trade]:
-        """Get recent trades"""
+    def get_open_trades(self) -> List[Dict]:
+        """Get open trades"""
         session = self.get_session()
         try:
-            query = session.query(Trade).order_by(desc(Trade.created_at))
-            if symbol:
-                query = query.filter(Trade.symbol == symbol)
-            return query.limit(limit).all()
+            trades = session.query(Trade).filter(Trade.exit_time.is_(None)).all()
+            return [self._trade_to_dict(t) for t in trades]
         finally:
             session.close()
     
-    def get_trades_by_date_range(
-        self, 
-        start_date: datetime, 
-        end_date: datetime,
-        symbol: Optional[str] = None
-    ) -> List[Trade]:
-        """Get trades within date range"""
-        session = self.get_session()
-        try:
-            query = session.query(Trade).filter(
-                and_(
-                    Trade.created_at >= start_date,
-                    Trade.created_at <= end_date
-                )
-            )
-            if symbol:
-                query = query.filter(Trade.symbol == symbol)
-            return query.order_by(desc(Trade.created_at)).all()
-        finally:
-            session.close()
+    def _trade_to_dict(self, trade: Trade) -> Dict:
+        """Convert trade object to dictionary"""
+        return {
+            'id': trade.id,
+            'symbol': trade.symbol,
+            'action': trade.action,
+            'entry_price': trade.entry_price,
+            'exit_price': trade.exit_price,
+            'position_size': trade.position_size,
+            'leverage': trade.leverage,
+            'pnl': trade.pnl,
+            'confidence': trade.confidence,
+            'entry_time': trade.entry_time.isoformat() if trade.entry_time else None,
+            'exit_time': trade.exit_time.isoformat() if trade.exit_time else None
+        }
     
-    def get_trades_by_strategy(self, strategy_name: str, limit: int = 100) -> List[Trade]:
-        """Get trades for specific strategy"""
-        session = self.get_session()
-        try:
-            return session.query(Trade).filter(
-                Trade.strategy_name == strategy_name
-            ).order_by(desc(Trade.created_at)).limit(limit).all()
-        finally:
-            session.close()
+    # ========================================================================
+    # STRATEGY OPERATIONS
+    # ========================================================================
     
-    # ===== SIGNAL OPERATIONS =====
-    
-    def create_signal(self, signal_data: Dict[str, Any]) -> TradingSignal:
-        """Create new trading signal"""
-        session = self.get_session()
-        try:
-            signal = TradingSignal(**signal_data)
-            session.add(signal)
-            session.commit()
-            session.refresh(signal)
-            logger.debug(f"Created signal: {signal.signal_id}")
-            return signal
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error creating signal: {e}")
-            raise
-        finally:
-            session.close()
-    
-    def get_recent_signals(self, limit: int = 50, symbol: Optional[str] = None) -> List[TradingSignal]:
-        """Get recent signals"""
-        session = self.get_session()
-        try:
-            query = session.query(TradingSignal).order_by(desc(TradingSignal.created_at))
-            if symbol:
-                query = query.filter(TradingSignal.symbol == symbol)
-            return query.limit(limit).all()
-        finally:
-            session.close()
-    
-    def mark_signal_acted(self, signal_id: str, trade_id: int) -> Optional[TradingSignal]:
-        """Mark signal as acted upon"""
-        session = self.get_session()
-        try:
-            signal = session.query(TradingSignal).filter(
-                TradingSignal.signal_id == signal_id
-            ).first()
-            if signal:
-                signal.action_taken = True
-                signal.trade_id = trade_id
-                session.commit()
-                session.refresh(signal)
-            return signal
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error marking signal: {e}")
-            raise
-        finally:
-            session.close()
-    
-    # ===== STRATEGY OPERATIONS =====
-    
-    def create_strategy(self, strategy_data: Dict[str, Any]) -> Strategy:
-        """Create new strategy"""
+    def save_strategy(self, strategy_data: Dict) -> int:
+        """Save strategy to database"""
         session = self.get_session()
         try:
             strategy = Strategy(**strategy_data)
             session.add(strategy)
             session.commit()
-            session.refresh(strategy)
-            logger.info(f"Created strategy: {strategy.name}")
-            return strategy
-        except SQLAlchemyError as e:
+            return strategy.id
+        except Exception as e:
             session.rollback()
-            logger.error(f"Error creating strategy: {e}")
+            logger.error(f"Failed to save strategy: {e}")
             raise
         finally:
             session.close()
     
-    def get_strategy(self, strategy_id: str) -> Optional[Strategy]:
+    def get_strategy(self, strategy_id: int) -> Optional[Dict]:
         """Get strategy by ID"""
         session = self.get_session()
         try:
-            return session.query(Strategy).filter(
-                Strategy.strategy_id == strategy_id
-            ).first()
-        finally:
-            session.close()
-    
-    def get_active_strategy(self) -> Optional[Strategy]:
-        """Get currently active strategy"""
-        session = self.get_session()
-        try:
-            return session.query(Strategy).filter(
-                Strategy.is_active == True
-            ).first()
-        finally:
-            session.close()
-    
-    def update_strategy(self, strategy_id: str, updates: Dict[str, Any]) -> Optional[Strategy]:
-        """Update strategy"""
-        session = self.get_session()
-        try:
-            strategy = session.query(Strategy).filter(
-                Strategy.strategy_id == strategy_id
-            ).first()
+            strategy = session.query(Strategy).filter(Strategy.id == strategy_id).first()
             if strategy:
-                for key, value in updates.items():
-                    setattr(strategy, key, value)
-                session.commit()
-                session.refresh(strategy)
-                logger.info(f"Updated strategy: {strategy_id}")
-            return strategy
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error updating strategy: {e}")
-            raise
+                return self._strategy_to_dict(strategy)
+            return None
         finally:
             session.close()
     
-    def activate_strategy(self, strategy_id: str) -> Optional[Strategy]:
-        """Activate strategy and deactivate others"""
-        session = self.get_session()
-        try:
-            # Deactivate all strategies
-            session.query(Strategy).update({'is_active': False})
-            
-            # Activate this strategy
-            strategy = session.query(Strategy).filter(
-                Strategy.strategy_id == strategy_id
-            ).first()
-            if strategy:
-                strategy.is_active = True
-                strategy.activated_at = datetime.utcnow()
-                session.commit()
-                session.refresh(strategy)
-                logger.info(f"Activated strategy: {strategy.name}")
-            return strategy
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error activating strategy: {e}")
-            raise
-        finally:
-            session.close()
-    
-    def get_all_strategies(self) -> List[Strategy]:
+    def get_all_strategies(self) -> List[Dict]:
         """Get all strategies"""
         session = self.get_session()
         try:
-            return session.query(Strategy).order_by(desc(Strategy.created_at)).all()
+            strategies = session.query(Strategy).order_by(desc(Strategy.created_at)).all()
+            return [self._strategy_to_dict(s) for s in strategies]
         finally:
             session.close()
     
-    # ===== PERFORMANCE METRICS =====
+    def _strategy_to_dict(self, strategy: Strategy) -> Dict:
+        """Convert strategy object to dictionary"""
+        return {
+            'id': strategy.id,
+            'name': strategy.name,
+            'description': strategy.description,
+            'parameters': strategy.parameters,
+            'is_active': strategy.is_active,
+            'created_at': strategy.created_at.isoformat() if strategy.created_at else None
+        }
     
-    def save_performance_snapshot(self, metrics_data: Dict[str, Any]) -> PerformanceMetric:
-        """Save performance metrics snapshot"""
+    # ========================================================================
+    # PERFORMANCE METRICS
+    # ========================================================================
+    
+    def save_performance_metric(self, metric_data: Dict):
+        """Save performance metric"""
         session = self.get_session()
         try:
-            metrics = PerformanceMetric(**metrics_data)
-            session.add(metrics)
+            metric = PerformanceMetric(**metric_data)
+            session.add(metric)
             session.commit()
-            session.refresh(metrics)
-            logger.debug("Saved performance snapshot")
-            return metrics
-        except SQLAlchemyError as e:
+        except Exception as e:
             session.rollback()
-            logger.error(f"Error saving metrics: {e}")
+            logger.error(f"Failed to save metric: {e}")
             raise
         finally:
             session.close()
     
-    def get_latest_metrics(self) -> Optional[PerformanceMetric]:
+    def get_performance_metrics(self) -> Dict:
         """Get latest performance metrics"""
         session = self.get_session()
         try:
-            return session.query(PerformanceMetric).order_by(
-                desc(PerformanceMetric.snapshot_time)
-            ).first()
-        finally:
-            session.close()
-    
-    def get_metrics_history(self, hours: int = 24) -> List[PerformanceMetric]:
-        """Get metrics history"""
-        session = self.get_session()
-        try:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
-            return session.query(PerformanceMetric).filter(
-                PerformanceMetric.snapshot_time >= cutoff
-            ).order_by(PerformanceMetric.snapshot_time).all()
-        finally:
-            session.close()
-    
-    # ===== AI INTERACTIONS =====
-    
-    def log_ai_interaction(self, interaction_data: Dict[str, Any]) -> AIInteraction:
-        """Log AI interaction"""
-        session = self.get_session()
-        try:
-            interaction = AIInteraction(**interaction_data)
-            session.add(interaction)
-            session.commit()
-            session.refresh(interaction)
-            return interaction
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error logging AI interaction: {e}")
-            raise
-        finally:
-            session.close()
-    
-    def get_ai_interactions(self, limit: int = 50) -> List[AIInteraction]:
-        """Get recent AI interactions"""
-        session = self.get_session()
-        try:
-            return session.query(AIInteraction).order_by(
-                desc(AIInteraction.created_at)
-            ).limit(limit).all()
-        finally:
-            session.close()
-    
-    def get_total_ai_cost(self, days: int = 30) -> float:
-        """Calculate total AI cost"""
-        session = self.get_session()
-        try:
-            cutoff = datetime.utcnow() - timedelta(days=days)
-            result = session.query(func.sum(AIInteraction.cost)).filter(
-                AIInteraction.created_at >= cutoff
-            ).scalar()
-            return result or 0.0
-        finally:
-            session.close()
-    
-    # ===== SYSTEM LOGS =====
-    
-    def create_system_log(self, log_data: Dict[str, Any]) -> SystemLog:
-        """Create system log entry"""
-        session = self.get_session()
-        try:
-            log = SystemLog(**log_data)
-            session.add(log)
-            session.commit()
-            return log
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"Error creating system log: {e}")
-            raise
-        finally:
-            session.close()
-    
-    def get_system_logs(
-        self, 
-        level: Optional[str] = None,
-        component: Optional[str] = None,
-        hours: int = 24,
-        limit: int = 100
-    ) -> List[SystemLog]:
-        """Get system logs"""
-        session = self.get_session()
-        try:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
-            query = session.query(SystemLog).filter(SystemLog.created_at >= cutoff)
+            # Get all trades
+            trades = session.query(Trade).all()
             
-            if level:
-                query = query.filter(SystemLog.level == level.upper())
-            if component:
-                query = query.filter(SystemLog.component == component)
-            
-            return query.order_by(desc(SystemLog.created_at)).limit(limit).all()
-        finally:
-            session.close()
-    
-    # ===== STATISTICS =====
-    
-    def get_trading_statistics(self, days: int = 30) -> Dict[str, Any]:
-        """Get comprehensive trading statistics"""
-        session = self.get_session()
-        try:
-            cutoff = datetime.utcnow() - timedelta(days=days)
-            
-            # Total trades
-            total_trades = session.query(func.count(Trade.id)).filter(
-                Trade.created_at >= cutoff
-            ).scalar() or 0
-            
-            # Closed trades
-            closed_trades = session.query(Trade).filter(
-                and_(
-                    Trade.status == TradeStatus.CLOSED,
-                    Trade.created_at >= cutoff
-                )
-            ).all()
-            
-            # Calculate metrics
-            winning_trades = sum(1 for t in closed_trades if t.pnl > 0)
-            total_pnl = sum(t.pnl for t in closed_trades)
-            win_rate = (winning_trades / len(closed_trades) * 100) if closed_trades else 0
+            total_trades = len(trades)
+            winning_trades = sum(1 for t in trades if t.pnl and t.pnl > 0)
+            losing_trades = sum(1 for t in trades if t.pnl and t.pnl < 0)
+            total_pnl = sum(t.pnl for t in trades if t.pnl)
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
             
             return {
                 'total_trades': total_trades,
-                'closed_trades': len(closed_trades),
                 'winning_trades': winning_trades,
-                'losing_trades': len(closed_trades) - winning_trades,
-                'win_rate': round(win_rate, 2),
-                'total_pnl': round(total_pnl, 2),
-                'average_pnl': round(total_pnl / len(closed_trades), 2) if closed_trades else 0,
+                'losing_trades': losing_trades,
+                'total_pnl': total_pnl,
+                'win_rate': win_rate
             }
         finally:
             session.close()
     
-    # ===== CLEANUP =====
-    
-    def cleanup_old_data(self, days: int = 90):
-        """Remove old data to prevent database bloat"""
+    def get_performance_history(self, days: int = 7) -> List[Dict]:
+        """Get performance history"""
         session = self.get_session()
         try:
             cutoff = datetime.utcnow() - timedelta(days=days)
+            metrics = session.query(PerformanceMetric).filter(
+                PerformanceMetric.date >= cutoff
+            ).order_by(PerformanceMetric.date).all()
             
-            # Delete old closed trades
-            deleted_trades = session.query(Trade).filter(
-                and_(
-                    Trade.status == TradeStatus.CLOSED,
-                    Trade.closed_at < cutoff
-                )
-            ).delete()
-            
-            # Delete old signals
-            deleted_signals = session.query(TradingSignal).filter(
-                TradingSignal.created_at < cutoff
-            ).delete()
-            
-            # Delete old system logs
-            deleted_logs = session.query(SystemLog).filter(
-                SystemLog.created_at < cutoff
-            ).delete()
-            
+            return [{
+                'date': m.date.isoformat(),
+                'total_pnl': m.total_pnl,
+                'win_rate': m.win_rate,
+                'balance': m.balance
+            } for m in metrics]
+        finally:
+            session.close()
+    
+    # ========================================================================
+    # SIGNALS
+    # ========================================================================
+    
+    def save_signal(self, signal_data: Dict):
+        """Save trading signal"""
+        session = self.get_session()
+        try:
+            signal = Signal(**signal_data)
+            session.add(signal)
             session.commit()
-            
-            logger.info(f"Cleanup: removed {deleted_trades} trades, {deleted_signals} signals, {deleted_logs} logs")
-            
-            return {
-                'trades_deleted': deleted_trades,
-                'signals_deleted': deleted_signals,
-                'logs_deleted': deleted_logs
-            }
-        except SQLAlchemyError as e:
+        except Exception as e:
             session.rollback()
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Failed to save signal: {e}")
             raise
         finally:
             session.close()
+    
+    # ========================================================================
+    # COMPLIANCE
+    # ========================================================================
+    
+    def save_compliance_log(self, log_data: Dict):
+        """Save compliance log"""
+        session = self.get_session()
+        try:
+            log = ComplianceLog(**log_data)
+            session.add(log)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to save compliance log: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def generate_compliance_report(self) -> Dict:
+        """Generate compliance report for hackathon"""
+        session = self.get_session()
+        try:
+            trades = session.query(Trade).all()
+            violations = session.query(ComplianceLog).filter(
+                ComplianceLog.log_type == 'violation'
+            ).all()
+            
+            return {
+                'total_trades': len(trades),
+                'total_violations': len(violations),
+                'compliance_rate': (1 - len(violations) / max(len(trades), 1)) * 100,
+                'report_date': datetime.utcnow().isoformat()
+            }
+        finally:
+            session.close()
+    
+    # ========================================================================
+    # CHAT HISTORY
+    # ========================================================================
+    
+    def save_chat_message(self, role: str, message: str, session_id: str = None):
+        """Save chat message"""
+        session = self.get_session()
+        try:
+            chat = ChatHistory(role=role, message=message, session_id=session_id)
+            session.add(chat)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to save chat: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def get_chat_history(self, session_id: str = None, limit: int = 50) -> List[Dict]:
+        """Get chat history"""
+        session = self.get_session()
+        try:
+            query = session.query(ChatHistory)
+            if session_id:
+                query = query.filter(ChatHistory.session_id == session_id)
+            
+            messages = query.order_by(ChatHistory.timestamp).limit(limit).all()
+            
+            return [{
+                'role': m.role,
+                'message': m.message,
+                'timestamp': m.timestamp.isoformat()
+            } for m in messages]
+        finally:
+            session.close()
 
-# Example usage
-if __name__ == "__main__":
-    db = DatabaseManager()
-    
-    # Test trade creation
-    trade_data = {
-        'trade_id': 'TEST_001',
-        'symbol': 'BTC/USDT:USDT',
-        'side': TradeSide.LONG,
-        'status': TradeStatus.OPEN,
-        'quantity': 0.1,
-        'leverage': 10,
-        'entry_price': 50000,
-        'strategy_name': 'Test Strategy'
-    }
-    
-    trade = db.create_trade(trade_data)
-    print(f"✅ Created trade: {trade.trade_id}")
-    
-    # Get statistics
-    stats = db.get_trading_statistics(days=30)
-    print(f"📊 Statistics: {stats}")
+
+# Export
+__all__ = ['DatabaseManager']
