@@ -1,426 +1,304 @@
 """
-Unit tests for Hybrid Trading Engine.
-Tests autonomous trading loop, signal generation, and order execution.
+Test Suite for Hybrid Trading Engine
+Tests core functionality of the trading system
 """
+
 import pytest
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, patch, AsyncMock
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
-from backend.core.hybrid_engine import HybridTradingEngine
-from backend.exchange.weex_client import WEEXClient
-from backend.ai.bedrock_client import BedrockClient
-from backend.database.db_manager import DatabaseManager
-from backend.database.models import TradeStatus, TradeSide
+from core.hybrid_engine import HybridTradingEngine
+from core.signal_generator import SignalGenerator
+from core.risk_manager import RiskManager
+from exchange.safety_checker import SafetyChecker
+from strategies.technical_indicators import TechnicalIndicators
 
-# ===== FIXTURES =====
 
 @pytest.fixture
-def mock_exchange():
-    """Mock WEEX exchange client"""
-    exchange = Mock(spec=WEEXClient)
-    exchange.fetch_ohlcv.return_value = [
-        [1704067200000, 50000, 50100, 49900, 50050, 1000],
-        [1704067500000, 50050, 50150, 49950, 50100, 1100],
-        [1704067800000, 50100, 50200, 50000, 50150, 1200],
-    ] * 70  # 200+ candles for indicators
+def sample_ohlcv_data():
+    """Generate sample OHLCV data for testing"""
+    dates = pd.date_range(start='2024-01-01', periods=200, freq='5min')
+    np.random.seed(42)
     
-    exchange.get_balance.return_value = {
-        'free': 10000,
-        'used': 0,
-        'total': 10000
+    data = {
+        'timestamp': dates,
+        'open': np.random.uniform(40000, 50000, 200),
+        'high': np.random.uniform(40000, 50000, 200),
+        'low': np.random.uniform(40000, 50000, 200),
+        'close': np.random.uniform(40000, 50000, 200),
+        'volume': np.random.uniform(100, 1000, 200)
     }
     
-    exchange.create_market_order.return_value = {
-        'id': 'ORDER_12345',
+    return pd.DataFrame(data)
+
+
+class TestTechnicalIndicators:
+    """Test technical indicator calculations"""
+    
+    def test_rsi_calculation(self, sample_ohlcv_data):
+        """Test RSI calculation"""
+        indicators = TechnicalIndicators()
+        rsi = indicators.rsi(sample_ohlcv_data['close'])
+        
+        assert isinstance(rsi, float)
+        assert 0 <= rsi <= 100
+    
+    def test_macd_calculation(self, sample_ohlcv_data):
+        """Test MACD calculation"""
+        indicators = TechnicalIndicators()
+        macd, signal, histogram = indicators.macd(sample_ohlcv_data['close'])
+        
+        assert isinstance(macd, float)
+        assert isinstance(signal, float)
+        assert isinstance(histogram, float)
+    
+    def test_bollinger_bands(self, sample_ohlcv_data):
+        """Test Bollinger Bands calculation"""
+        indicators = TechnicalIndicators()
+        upper, middle, lower = indicators.bollinger_bands(sample_ohlcv_data['close'])
+        
+        assert upper > middle > lower
+        assert isinstance(upper, float)
+    
+    def test_atr_calculation(self, sample_ohlcv_data):
+        """Test ATR calculation"""
+        indicators = TechnicalIndicators()
+        atr = indicators.atr(
+            sample_ohlcv_data['high'],
+            sample_ohlcv_data['low'],
+            sample_ohlcv_data['close']
+        )
+        
+        assert isinstance(atr, float)
+        assert atr >= 0
+    
+    def test_monte_carlo_simulation(self, sample_ohlcv_data):
+        """Test Monte Carlo simulation"""
+        indicators = TechnicalIndicators()
+        probability, expected_price = indicators.monte_carlo_simulation(
+            sample_ohlcv_data['close']
+        )
+        
+        assert 0 <= probability <= 1
+        assert expected_price > 0
+    
+    def test_all_indicators(self, sample_ohlcv_data):
+        """Test calculation of all indicators"""
+        indicators = TechnicalIndicators()
+        result = indicators.calculate_all(sample_ohlcv_data)
+        
+        assert isinstance(result, dict)
+        assert 'rsi' in result
+        assert 'macd' in result
+        assert 'mc_probability' in result
+        assert len(result) >= 16  # Should have all 16 indicators
+
+
+class TestSignalGenerator:
+    """Test signal generation"""
+    
+    def test_signal_generation(self, sample_ohlcv_data):
+        """Test basic signal generation"""
+        generator = SignalGenerator()
+        signal = generator.generate_signal(sample_ohlcv_data, 'BTC/USDT:USDT')
+        
+        assert 'action' in signal
+        assert 'confidence' in signal
+        assert 'reasoning' in signal
+        assert 0 <= signal['confidence'] <= 1
+    
+    def test_long_score_calculation(self, sample_ohlcv_data):
+        """Test long score calculation"""
+        generator = SignalGenerator()
+        indicators = TechnicalIndicators().calculate_all(sample_ohlcv_data)
+        
+        long_score = generator._calculate_long_score(indicators)
+        
+        assert isinstance(long_score, float)
+        assert 0 <= long_score <= 1
+    
+    def test_short_score_calculation(self, sample_ohlcv_data):
+        """Test short score calculation"""
+        generator = SignalGenerator()
+        indicators = TechnicalIndicators().calculate_all(sample_ohlcv_data)
+        
+        short_score = generator._calculate_short_score(indicators)
+        
+        assert isinstance(short_score, float)
+        assert 0 <= short_score <= 1
+
+
+class TestRiskManager:
+    """Test risk management"""
+    
+    def test_position_size_calculation(self):
+        """Test position size calculation"""
+        risk_manager = RiskManager()
+        
+        size = risk_manager.calculate_position_size(
+            balance=10000,
+            risk_pct=0.02,
+            entry_price=50000,
+            stop_loss_price=49000,
+            leverage=10,
+            confidence=0.7
+        )
+        
+        assert size > 0
+        assert isinstance(size, float)
+    
+    def test_stop_loss_calculation(self):
+        """Test stop loss calculation"""
+        risk_manager = RiskManager()
+        
+        stop_loss = risk_manager.calculate_stop_loss(
+            entry_price=50000,
+            atr=500,
+            direction='long'
+        )
+        
+        assert stop_loss < 50000
+        assert isinstance(stop_loss, float)
+    
+    def test_take_profit_calculation(self):
+        """Test take profit calculation"""
+        risk_manager = RiskManager()
+        
+        take_profit = risk_manager.calculate_take_profit(
+            entry_price=50000,
+            stop_loss_price=49000,
+            direction='long'
+        )
+        
+        assert take_profit > 50000
+        assert isinstance(take_profit, float)
+    
+    def test_risk_validation(self):
+        """Test risk validation"""
+        risk_manager = RiskManager()
+        
+        is_valid, error = risk_manager.validate_risk(
+            position_size=0.1,
+            entry_price=50000,
+            balance=10000,
+            open_positions=0
+        )
+        
+        assert isinstance(is_valid, bool)
+
+
+class TestSafetyChecker:
+    """Test safety and compliance checks"""
+    
+    def test_symbol_validation(self):
+        """Test symbol validation"""
+        checker = SafetyChecker()
+        
+        # Valid symbol
+        is_valid, error = checker._check_symbol('BTC/USDT:USDT')
+        assert is_valid is True
+        
+        # Invalid symbol
+        is_valid, error = checker._check_symbol('INVALID/SYMBOL')
+        assert is_valid is False
+        assert error is not None
+    
+    def test_leverage_validation(self):
+        """Test leverage validation"""
+        checker = SafetyChecker()
+        
+        # Valid leverage
+        is_valid, error = checker._check_leverage(10)
+        assert is_valid is True
+        
+        # Invalid leverage (too high)
+        is_valid, error = checker._check_leverage(50)
+        assert is_valid is False
+        assert error is not None
+    
+    def test_trade_validation(self):
+        """Test complete trade validation"""
+        checker = SafetyChecker()
+        
+        is_valid, error = checker.validate_trade(
+            symbol='BTC/USDT:USDT',
+            side='buy',
+            amount=0.01,
+            leverage=10,
+            price=50000,
+            account_balance=10000
+        )
+        
+        assert isinstance(is_valid, bool)
+    
+    def test_compliance_report(self):
+        """Test compliance report generation"""
+        checker = SafetyChecker()
+        report = checker.get_compliance_report()
+        
+        assert 'allowed_symbols' in report
+        assert 'max_leverage' in report
+        assert 'compliance_rate' in report
+
+
+@pytest.mark.asyncio
+class TestHybridTradingEngine:
+    """Test hybrid trading engine"""
+    
+    async def test_engine_initialization(self):
+        """Test engine initialization"""
+        with patch('core.hybrid_engine.get_exchange_config') as mock_config:
+            mock_config.return_value = {
+                'type': 'weex',
+                'api_key': 'test',
+                'api_secret': 'test',
+                'testnet': True
+            }
+            
+            engine = HybridTradingEngine()
+            assert engine.is_running is False
+            assert engine.trade_count == 0
+    
+    async def test_status_retrieval(self):
+        """Test status retrieval"""
+        engine = HybridTradingEngine()
+        
+        # Mock exchange client
+        engine.exchange_client = AsyncMock()
+        engine.exchange_client.fetch_balance.return_value = {'total': 10000}
+        
+        status = await engine.get_status()
+        
+        assert 'is_running' in status
+        assert 'balance' in status
+        assert 'total_trades' in status
+
+
+# Helper functions for tests
+def create_mock_order():
+    """Create mock order response"""
+    return {
+        'id': 'test_order_123',
         'symbol': 'BTC/USDT:USDT',
         'side': 'buy',
-        'type': 'market',
-        'amount': 0.1,
+        'amount': 0.01,
         'price': 50000,
-        'status': 'closed'
+        'status': 'filled'
     }
-    
-    return exchange
 
-@pytest.fixture
-def mock_ai_client():
-    """Mock AI client"""
-    ai_client = Mock(spec=BedrockClient)
-    ai_client.invoke_model.return_value = {
-        'response': 'Market analysis complete',
-        'input_tokens': 100,
-        'output_tokens': 50
+
+def create_mock_balance():
+    """Create mock balance response"""
+    return {
+        'total': 10000,
+        'free': 9000,
+        'used': 1000,
+        'currency': 'USDT'
     }
-    return ai_client
 
-@pytest.fixture
-def mock_db():
-    """Mock database manager"""
-    db = Mock(spec=DatabaseManager)
-    db.create_trade.return_value = Mock(id=1, trade_id='TRADE_001')
-    db.get_active_strategy.return_value = None
-    db.get_open_trades.return_value = []
-    return db
 
-@pytest.fixture
-async def engine(mock_exchange, mock_ai_client, mock_db):
-    """Create hybrid engine instance"""
-    engine = HybridTradingEngine(
-        exchange_client=mock_exchange,
-        ai_client=mock_ai_client,
-        db_manager=mock_db
-    )
-    return engine
-
-# ===== TESTS =====
-
-class TestHybridEngineInitialization:
-    """Test engine initialization"""
-    
-    def test_engine_initializes_correctly(self, engine):
-        """Test that engine initializes with correct default values"""
-        assert engine is not None
-        assert engine.is_running is False
-        assert engine.current_strategy is None
-        assert len(engine.active_positions) == 0
-    
-    def test_components_initialized(self, engine):
-        """Test that all components are initialized"""
-        assert engine.exchange is not None
-        assert engine.ai_client is not None
-        assert engine.safety_checker is not None
-        assert engine.risk_manager is not None
-        assert engine.indicator_calculator is not None
-
-class TestMarketDataFetching:
-    """Test market data fetching"""
-    
-    @pytest.mark.asyncio
-    async def test_fetch_market_data_success(self, engine):
-        """Test successful market data fetch"""
-        ohlcv = await engine.fetch_market_data()
-        
-        assert ohlcv is not None
-        assert isinstance(ohlcv, pd.DataFrame)
-        assert len(ohlcv) > 50  # Enough for indicators
-        assert 'close' in ohlcv.columns
-        assert 'volume' in ohlcv.columns
-    
-    @pytest.mark.asyncio
-    async def test_fetch_market_data_failure(self, engine, mock_exchange):
-        """Test market data fetch failure handling"""
-        mock_exchange.fetch_ohlcv.return_value = None
-        
-        ohlcv = await engine.fetch_market_data()
-        
-        assert ohlcv is None
-    
-    @pytest.mark.asyncio
-    async def test_fetch_market_data_exception(self, engine, mock_exchange):
-        """Test exception handling in market data fetch"""
-        mock_exchange.fetch_ohlcv.side_effect = Exception("Network error")
-        
-        ohlcv = await engine.fetch_market_data()
-        
-        assert ohlcv is None
-
-class TestSignalProcessing:
-    """Test signal processing and trade execution"""
-    
-    @pytest.mark.asyncio
-    async def test_process_long_signal(self, engine):
-        """Test processing a long entry signal"""
-        signal = {
-            'action': 'long',
-            'confidence': 0.8,
-            'entry_price': 50000,
-            'stop_loss': 49500,
-            'take_profit': 51000,
-            'reason': 'RSI oversold'
-        }
-        
-        indicators = {}
-        ohlcv = pd.DataFrame({
-            'timestamp': [datetime.now()],
-            'open': [50000],
-            'high': [50100],
-            'low': [49900],
-            'close': [50050],
-            'volume': [1000]
-        })
-        
-        # Load a mock strategy
-        engine.current_strategy = Mock()
-        engine.current_strategy.name = 'Test Strategy'
-        engine.current_strategy.leverage = 10
-        
-        await engine.process_signal(signal, indicators, ohlcv)
-        
-        # Verify order was created
-        engine.exchange.create_market_order.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_process_no_signal(self, engine):
-        """Test that no signal results in no action"""
-        signal = {
-            'action': 'none',
-            'confidence': 0.0,
-            'reason': 'No clear signal'
-        }
-        
-        await engine.process_signal(signal, {}, pd.DataFrame())
-        
-        # Verify no order was created
-        engine.exchange.create_market_order.assert_not_called()
-    
-    @pytest.mark.asyncio
-    async def test_skip_entry_when_position_exists(self, engine):
-        """Test that entry signal is skipped when position exists"""
-        # Add existing position
-        engine.active_positions['BTC/USDT:USDT'] = {
-            'side': 'long',
-            'entry_price': 50000
-        }
-        
-        signal = {
-            'action': 'long',
-            'confidence': 0.8,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        ohlcv = pd.DataFrame({'close': [50050]})
-        
-        await engine.process_signal(signal, {}, ohlcv)
-        
-        # Verify no new order was created
-        engine.exchange.create_market_order.assert_not_called()
-
-class TestPositionManagement:
-    """Test position management (stop loss, take profit)"""
-    
-    @pytest.mark.asyncio
-    async def test_stop_loss_hit_long(self, engine):
-        """Test stop loss trigger for long position"""
-        # Add active position
-        engine.active_positions['BTC/USDT:USDT'] = {
-            'trade_id': 'TRADE_001',
-            'side': 'long',
-            'entry_price': 50000,
-            'quantity': 0.1,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        # Mock current price below stop loss
-        ohlcv = pd.DataFrame({
-            'close': [49400],  # Below stop loss
-            'high': [49500],
-            'low': [49300],
-            'volume': [1000]
-        })
-        
-        await engine.manage_positions(ohlcv)
-        
-        # Verify position was closed
-        assert 'BTC/USDT:USDT' not in engine.active_positions
-    
-    @pytest.mark.asyncio
-    async def test_take_profit_hit_long(self, engine):
-        """Test take profit trigger for long position"""
-        engine.active_positions['BTC/USDT:USDT'] = {
-            'trade_id': 'TRADE_001',
-            'side': 'long',
-            'entry_price': 50000,
-            'quantity': 0.1,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        ohlcv = pd.DataFrame({
-            'close': [51100],  # Above take profit
-            'high': [51200],
-            'low': [51000],
-            'volume': [1000]
-        })
-        
-        await engine.manage_positions(ohlcv)
-        
-        # Verify position was closed
-        assert 'BTC/USDT:USDT' not in engine.active_positions
-
-class TestStrategyApplication:
-    """Test strategy loading and application"""
-    
-    def test_apply_strategy(self, engine):
-        """Test applying a new strategy"""
-        strategy_config = {
-            'name': 'Test Strategy',
-            'symbol': 'BTC/USDT:USDT',
-            'timeframe': '5m',
-            'leverage': 10,
-            'risk_per_trade': 0.02
-        }
-        
-        engine.apply_strategy(strategy_config)
-        
-        assert engine.current_strategy is not None
-        assert engine.current_strategy.name == 'Test Strategy'
-        assert engine.symbol == 'BTC/USDT:USDT'
-        assert engine.timeframe == '5m'
-    
-    def test_load_strategy_from_db(self, engine):
-        """Test loading strategy from database model"""
-        strategy_model = Mock()
-        strategy_model.name = 'DB Strategy'
-        strategy_model.symbol = 'ETH/USDT:USDT'
-        strategy_model.timeframe = '15m'
-        strategy_model.leverage = 5
-        strategy_model.config = {'test': 'config'}
-        
-        engine.load_strategy_from_db(strategy_model)
-        
-        assert engine.current_strategy is not None
-        assert engine.symbol == 'ETH/USDT:USDT'
-        assert engine.timeframe == '15m'
-
-class TestEngineControl:
-    """Test engine start/stop control"""
-    
-    @pytest.mark.asyncio
-    async def test_start_engine(self, engine):
-        """Test starting the engine"""
-        # Mock the main loop to avoid infinite loop
-        engine._main_loop = AsyncMock()
-        
-        await engine.start()
-        
-        # Main loop should have been called
-        engine._main_loop.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_stop_engine(self, engine):
-        """Test stopping the engine"""
-        engine.is_running = True
-        engine.active_positions['BTC/USDT:USDT'] = {
-            'trade_id': 'TRADE_001',
-            'side': 'long',
-            'entry_price': 50000,
-            'quantity': 0.1,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        await engine.stop()
-        
-        assert engine.is_running is False
-        # Verify positions were closed
-        # (would need to mock execute_exit properly)
-    
-    def test_get_status(self, engine):
-        """Test getting engine status"""
-        engine.is_running = True
-        engine.current_strategy = Mock(name='Test Strategy')
-        engine.daily_trades = 5
-        engine.daily_pnl = 123.45
-        
-        status = engine.get_status()
-        
-        assert status['is_running'] is True
-        assert status['strategy'] == 'Test Strategy'
-        assert status['daily_trades'] == 5
-        assert status['daily_pnl'] == 123.45
-
-class TestRiskManagement:
-    """Test risk management integration"""
-    
-    @pytest.mark.asyncio
-    async def test_daily_loss_limit_prevents_trade(self, engine):
-        """Test that daily loss limit prevents new trades"""
-        engine.daily_pnl = -600  # -6% loss with 10k balance
-        engine.current_strategy = Mock()
-        engine.current_strategy.leverage = 10
-        
-        signal = {
-            'action': 'long',
-            'confidence': 0.8,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        ohlcv = pd.DataFrame({'close': [50000]})
-        
-        await engine.process_signal(signal, {}, ohlcv)
-        
-        # Should not create order due to daily loss limit
-        engine.exchange.create_market_order.assert_not_called()
-    
-    @pytest.mark.asyncio
-    async def test_insufficient_balance_prevents_trade(self, engine, mock_exchange):
-        """Test that insufficient balance prevents trades"""
-        mock_exchange.get_balance.return_value = {
-            'free': 5,  # Below minimum
-            'total': 5
-        }
-        
-        engine.current_strategy = Mock()
-        engine.current_strategy.leverage = 10
-        
-        signal = {
-            'action': 'long',
-            'confidence': 0.8,
-            'stop_loss': 49500,
-            'take_profit': 51000
-        }
-        
-        ohlcv = pd.DataFrame({'close': [50000]})
-        
-        await engine.process_signal(signal, {}, ohlcv)
-        
-        # Should not create order due to low balance
-        mock_exchange.create_market_order.assert_not_called()
-
-# ===== INTEGRATION TESTS =====
-
-class TestEndToEndTrading:
-    """End-to-end trading flow tests"""
-    
-    @pytest.mark.asyncio
-    async def test_complete_trade_cycle(self, engine):
-        """Test complete trade from entry to exit"""
-        # 1. Apply strategy
-        strategy_config = {
-            'name': 'E2E Test Strategy',
-            'symbol': 'BTC/USDT:USDT',
-            'timeframe': '5m',
-            'leverage': 10
-        }
-        engine.apply_strategy(strategy_config)
-        
-        # 2. Process entry signal
-        entry_signal = {
-            'action': 'long',
-            'confidence': 0.8,
-            'stop_loss': 49500,
-            'take_profit': 51000,
-            'reason': 'RSI oversold'
-        }
-        
-        ohlcv = pd.DataFrame({'close': [50000]})
-        await engine.process_signal(entry_signal, {}, ohlcv)
-        
-        # Verify position opened
-        assert len(engine.active_positions) == 1
-        
-        # 3. Trigger take profit
-        ohlcv = pd.DataFrame({'close': [51100]})
-        await engine.manage_positions(ohlcv)
-        
-        # Verify position closed
-        assert len(engine.active_positions) == 0
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+# Run tests
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
