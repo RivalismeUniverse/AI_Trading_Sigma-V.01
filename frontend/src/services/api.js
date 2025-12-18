@@ -1,13 +1,13 @@
 /**
- * API Service for AI TRADING SIGMA 
- * Handles all HTTP requests to backend
+ * API Service
+ * Centralized API calls to backend
  */
+
 import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// Create axios instance with default config
-const apiClient = axios.create({
+const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
   headers: {
@@ -15,151 +15,76 @@ const apiClient = axios.create({
   },
 });
 
-// Request interceptor
-apiClient.interceptors.request.use(
-  (config) => {
-    // Add auth token if exists
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
+// Response interceptor for error handling
+api.interceptors.response.use(
+  response => response.data,
+  error => {
+    console.error('API Error:', error.response?.data || error.message);
+    return Promise.reject(error.response?.data || error.message);
   }
 );
 
-// Response interceptor
-apiClient.interceptors.response.use(
-  (response) => response.data,
-  (error) => {
-    const message = error.response?.data?.detail || error.message;
-    console.error('API Error:', message);
-    return Promise.reject(error);
-  }
-);
+// Health & Status
+export const getHealth = () => api.get('/api/health');
+export const getTradingStatus = () => api.get('/api/trading/status');
 
-// ===== API METHODS =====
+// Trading Control
+export const startTrading = () => api.post('/api/trading/start');
+export const stopTrading = () => api.post('/api/trading/stop');
 
-const api = {
-  // ===== HEALTH & STATUS =====
-  async getHealth() {
-    return apiClient.get('/health');
-  },
+// AI Chat
+export const sendChatMessage = (message, history = []) => 
+  api.post('/api/chat', { message, history });
 
-  // ===== CHAT =====
-  async sendChatMessage(message, context = {}) {
-    return apiClient.post('/api/chat', {
-      message,
-      context,
-    });
-  },
+// Strategy
+export const createStrategy = (prompt) => 
+  api.post('/api/strategy/create', { prompt });
 
-  // ===== STRATEGY =====
-  async createStrategy(userPrompt) {
-    return apiClient.post('/api/strategy/create', {
-      user_prompt: userPrompt,
-    });
-  },
+export const applyStrategy = (strategyId) => 
+  api.post('/api/strategy/apply', { strategy_id: strategyId });
 
-  async applyStrategy(strategyConfig) {
-    return apiClient.post('/api/strategy/apply', {
-      strategy_config: strategyConfig,
-    });
-  },
+export const listStrategies = () => api.get('/api/strategy/list');
+export const getActiveStrategy = () => api.get('/api/strategy/active');
 
-  async listStrategies() {
-    return apiClient.get('/api/strategy/list');
-  },
+// Performance
+export const getPerformance = () => api.get('/api/performance');
+export const getPerformanceHistory = (days = 7) => 
+  api.get(`/api/performance/history?days=${days}`);
 
-  async getActiveStrategy() {
-    return apiClient.get('/api/strategy/active');
-  },
+// Trades
+export const getTrades = (limit = 50, offset = 0) => 
+  api.get(`/api/trades?limit=${limit}&offset=${offset}`);
 
-  // ===== TRADING CONTROL =====
-  async startTrading() {
-    return apiClient.post('/api/trading/start');
-  },
+export const getOpenPositions = () => api.get('/api/trades/open');
 
-  async stopTrading() {
-    return apiClient.post('/api/trading/stop');
-  },
+// Balance
+export const getBalance = () => api.get('/api/balance');
 
-  async getTradingStatus() {
-    return apiClient.get('/api/trading/status');
-  },
+// Circuit Breaker
+export const getCircuitBreakerStatus = () => 
+  api.get('/api/circuit-breaker/status');
 
-  // ===== PERFORMANCE =====
-  async getPerformance() {
-    return apiClient.get('/api/performance');
-  },
+export const getCircuitBreakerIssues = (minutes = 5) => 
+  api.get(`/api/circuit-breaker/issues?minutes=${minutes}`);
 
-  async getPerformanceHistory(hours = 24) {
-    return apiClient.get(`/api/performance/history?hours=${hours}`);
-  },
+export const forceCircuitBreakerRecovery = () => 
+  api.post('/api/circuit-breaker/recover');
 
-  // ===== TRADES =====
-  async getTrades(limit = 50, symbol = null) {
-    const params = new URLSearchParams({ limit });
-    if (symbol) params.append('symbol', symbol);
-    return apiClient.get(`/api/trades?${params}`);
-  },
+export const toggleCircuitBreakerOverride = (enabled, reason = '') => 
+  api.post('/api/circuit-breaker/override', { enabled, reason });
 
-  async getOpenTrades(symbol = null) {
-    const params = symbol ? `?symbol=${symbol}` : '';
-    return apiClient.get(`/api/trades/open${params}`);
-  },
+// Notifications
+export const getNotifications = (limit = 20) => 
+  api.get(`/api/notifications?limit=${limit}`);
 
-  // ===== COMPLIANCE =====
-  async getComplianceReport() {
-    return apiClient.get('/api/compliance/report');
-  },
+export const markNotificationRead = (notificationId) => 
+  api.post(`/api/notifications/${notificationId}/read`);
 
-  async getComplianceLogs(limit = 100) {
-    return apiClient.get(`/api/compliance/logs?limit=${limit}`);
-  },
-};
+export const clearNotifications = () => 
+  api.delete('/api/notifications');
+
+// Compliance
+export const getComplianceReport = () => 
+  api.get('/api/compliance/report');
 
 export default api;
-
-// ===== HELPER FUNCTIONS =====
-
-/**
- * Format API error for display
- */
-export const formatApiError = (error) => {
-  if (error.response) {
-    return error.response.data?.detail || 'Server error occurred';
-  } else if (error.request) {
-    return 'No response from server. Please check your connection.';
-  } else {
-    return error.message || 'An unexpected error occurred';
-  }
-};
-
-/**
- * Check if API is available
- */
-export const checkApiHealth = async () => {
-  try {
-    await api.getHealth();
-    return true;
-  } catch (error) {
-    return false;
-  }
-};
-
-/**
- * Retry failed request
- */
-export const retryRequest = async (requestFn, maxRetries = 3, delay = 1000) => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await requestFn();
-    } catch (error) {
-      if (i === maxRetries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
-    }
-  }
-};
