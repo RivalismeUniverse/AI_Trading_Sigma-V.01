@@ -1,0 +1,70 @@
+.App {
+  min-height: 100vh;
+}
+
+/* Chart Customization */
+.recharts-wrapper {
+  @apply rounded-lg;
+}
+
+.recharts-surface {
+  @apply rounded-lg;
+}
+
+/* Table Hover Effects */
+table tbody tr {
+  @apply transition-colors duration-150;
+}
+
+/* Pulsing Animation for Status */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.33);
+  }
+  80%, 100% {
+    opacity: 0;
+  }
+}
+
+.status-indicator {
+  @apply relative inline-flex;
+}
+
+.status-indicator::before {
+  content: '';
+  @apply absolute inset-0 rounded-full animate-ping;
+}
+
+/* Loading Skeleton */
+.skeleton {
+  @apply animate-pulse bg-dark-200 rounded;
+}
+
+/* Notification Badge */
+.notification-badge {
+  @apply absolute -top-1 -right-1 bg-danger-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold;
+}
+
+/* Status Badges */
+.status-running {
+  @apply bg-success-500 bg-opacity-20 text-success-500 border border-success-500;
+}
+
+.status-stopped {
+  @apply bg-dark-300 bg-opacity-20 text-dark-600 border border-dark-300;
+}
+
+.status-alert {
+  @apply bg-warning-500 bg-opacity-20 text-warning-500 border border-warning-500;
+}
+
+.status-error {
+  @apply bg-danger-500 bg-opacity-20 text-danger-500 border border-danger-500;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .container {
+    @apply px-2;
+  }
+}
