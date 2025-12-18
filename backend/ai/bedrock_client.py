@@ -1,290 +1,308 @@
 """
-AWS Bedrock Client - AI Integration
-Claude 3.5 Sonnet for strategy generation and chat
+Technical Indicators - 16 Indicators (12 Basic + 4 Advanced)
+Complete indicator suite for scalping strategy
 """
 
-import boto3
-import json
-from typing import Dict, List, Optional
-from datetime import datetime
-
-from config import settings
-from utils.logger import setup_logger
-
-logger = setup_logger(__name__)
+import numpy as np
+import pandas as pd
+from typing import Dict, Tuple
+from scipy import stats
 
 
-class BedrockClient:
-    """AWS Bedrock client for Claude AI integration"""
+class TechnicalIndicators:
+    """
+    Calculate all technical indicators for trading signals
+    16 indicators total: 12 basic + 4 advanced
+    """
     
-    def __init__(self):
-        self.client = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=settings.AWS_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+    @staticmethod
+    def calculate_all(df: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate all indicators at once
+        
+        Args:
+            df: DataFrame with OHLCV data
+            
+        Returns:
+            Dictionary with all indicator values
+        """
+        indicators = {}
+        
+        # Basic Momentum Indicators
+        indicators['rsi'] = TechnicalIndicators.rsi(df['close'])
+        macd, signal, histogram = TechnicalIndicators.macd(df['close'])
+        indicators['macd'] = macd
+        indicators['macd_signal'] = signal
+        indicators['macd_histogram'] = histogram
+        
+        stoch_k, stoch_d = TechnicalIndicators.stochastic(df['high'], df['low'], df['close'])
+        indicators['stoch_k'] = stoch_k
+        indicators['stoch_d'] = stoch_d
+        
+        # Trend Indicators
+        indicators['ema_9'] = TechnicalIndicators.ema(df['close'], 9)
+        indicators['ema_20'] = TechnicalIndicators.ema(df['close'], 20)
+        indicators['ema_50'] = TechnicalIndicators.ema(df['close'], 50)
+        indicators['ema_200'] = TechnicalIndicators.ema(df['close'], 200)
+        indicators['sma_20'] = TechnicalIndicators.sma(df['close'], 20)
+        
+        # Volatility Indicators
+        bb_upper, bb_middle, bb_lower = TechnicalIndicators.bollinger_bands(df['close'])
+        indicators['bb_upper'] = bb_upper
+        indicators['bb_middle'] = bb_middle
+        indicators['bb_lower'] = bb_lower
+        indicators['bb_width'] = (bb_upper - bb_lower) / bb_middle if bb_middle != 0 else 0
+        indicators['atr'] = TechnicalIndicators.atr(df['high'], df['low'], df['close'])
+        
+        # Strength Indicators
+        indicators['adx'] = TechnicalIndicators.adx(df['high'], df['low'], df['close'])
+        indicators['cci'] = TechnicalIndicators.cci(df['high'], df['low'], df['close'])
+        indicators['mfi'] = TechnicalIndicators.mfi(df['high'], df['low'], df['close'], df['volume'])
+        
+        # Volume Indicators
+        indicators['obv'] = TechnicalIndicators.obv(df['close'], df['volume'])
+        indicators['vwap'] = TechnicalIndicators.vwap(df['high'], df['low'], df['close'], df['volume'])
+        
+        # Advanced Indicators (Our Secret Sauce)
+        indicators['mc_probability'], indicators['mc_expected_price'] = TechnicalIndicators.monte_carlo_simulation(df['close'])
+        indicators['gk_volatility'] = TechnicalIndicators.garman_klass_volatility(df['high'], df['low'], df['open'], df['close'])
+        indicators['z_score'] = TechnicalIndicators.z_score(df['close'])
+        indicators['lr_slope'] = TechnicalIndicators.linear_regression_slope(df['close'])
+        
+        return indicators
+    
+    # ========================================================================
+    # BASIC INDICATORS (12)
+    # ========================================================================
+    
+    @staticmethod
+    def rsi(close: pd.Series, period: int = 14) -> float:
+        """Relative Strength Index"""
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not rsi.empty else 50.0
+    
+    @staticmethod
+    def macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[float, float, float]:
+        """Moving Average Convergence Divergence"""
+        ema_fast = close.ewm(span=fast, adjust=False).mean()
+        ema_slow = close.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        
+        return (
+            macd_line.iloc[-1] if not macd_line.empty else 0.0,
+            signal_line.iloc[-1] if not signal_line.empty else 0.0,
+            histogram.iloc[-1] if not histogram.empty else 0.0
         )
-        self.model_id = settings.BEDROCK_MODEL_ID
-        
-        # Load prompt templates
-        self.strategy_prompt = self._load_strategy_prompt()
-        self.analysis_prompt = self._load_analysis_prompt()
     
-    async def chat(
-        self,
-        message: str,
-        conversation_history: List[Dict] = None
-    ) -> str:
-        """
-        Chat with Claude AI
+    @staticmethod
+    def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> Tuple[float, float]:
+        """Stochastic Oscillator"""
+        lowest_low = low.rolling(window=period).min()
+        highest_high = high.rolling(window=period).max()
         
-        Args:
-            message: User message
-            conversation_history: Previous conversation
-            
+        stoch_k = 100 * (close - lowest_low) / (highest_high - lowest_low)
+        stoch_d = stoch_k.rolling(window=3).mean()
+        
+        return (
+            stoch_k.iloc[-1] if not stoch_k.empty else 50.0,
+            stoch_d.iloc[-1] if not stoch_d.empty else 50.0
+        )
+    
+    @staticmethod
+    def ema(close: pd.Series, period: int) -> float:
+        """Exponential Moving Average"""
+        ema = close.ewm(span=period, adjust=False).mean()
+        return ema.iloc[-1] if not ema.empty else close.iloc[-1]
+    
+    @staticmethod
+    def sma(close: pd.Series, period: int) -> float:
+        """Simple Moving Average"""
+        sma = close.rolling(window=period).mean()
+        return sma.iloc[-1] if not sma.empty else close.iloc[-1]
+    
+    @staticmethod
+    def bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> Tuple[float, float, float]:
+        """Bollinger Bands"""
+        sma = close.rolling(window=period).mean()
+        std = close.rolling(window=period).std()
+        
+        upper = sma + (std * std_dev)
+        lower = sma - (std * std_dev)
+        
+        return (
+            upper.iloc[-1] if not upper.empty else close.iloc[-1],
+            sma.iloc[-1] if not sma.empty else close.iloc[-1],
+            lower.iloc[-1] if not lower.empty else close.iloc[-1]
+        )
+    
+    @staticmethod
+    def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
+        """Average True Range"""
+        high_low = high - low
+        high_close = np.abs(high - close.shift())
+        low_close = np.abs(low - close.shift())
+        
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        atr = true_range.rolling(window=period).mean()
+        
+        return atr.iloc[-1] if not atr.empty else 0.0
+    
+    @staticmethod
+    def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
+        """Average Directional Index"""
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+        
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        
+        tr = pd.concat([high - low, np.abs(high - close.shift()), np.abs(low - close.shift())], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        
+        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+        
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.rolling(window=period).mean()
+        
+        return adx.iloc[-1] if not adx.empty else 0.0
+    
+    @staticmethod
+    def cci(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 20) -> float:
+        """Commodity Channel Index"""
+        typical_price = (high + low + close) / 3
+        sma = typical_price.rolling(window=period).mean()
+        mean_deviation = typical_price.rolling(window=period).apply(lambda x: np.abs(x - x.mean()).mean())
+        
+        cci = (typical_price - sma) / (0.015 * mean_deviation)
+        return cci.iloc[-1] if not cci.empty else 0.0
+    
+    @staticmethod
+    def mfi(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, period: int = 14) -> float:
+        """Money Flow Index"""
+        typical_price = (high + low + close) / 3
+        money_flow = typical_price * volume
+        
+        positive_flow = money_flow.where(typical_price > typical_price.shift(), 0).rolling(window=period).sum()
+        negative_flow = money_flow.where(typical_price < typical_price.shift(), 0).rolling(window=period).sum()
+        
+        mfi = 100 - (100 / (1 + positive_flow / negative_flow))
+        return mfi.iloc[-1] if not mfi.empty else 50.0
+    
+    @staticmethod
+    def obv(close: pd.Series, volume: pd.Series) -> float:
+        """On-Balance Volume"""
+        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+        return obv.iloc[-1] if not obv.empty else 0.0
+    
+    @staticmethod
+    def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> float:
+        """Volume Weighted Average Price"""
+        typical_price = (high + low + close) / 3
+        vwap = (typical_price * volume).cumsum() / volume.cumsum()
+        return vwap.iloc[-1] if not vwap.empty else close.iloc[-1]
+    
+    # ========================================================================
+    # ADVANCED INDICATORS (4) - Our Secret Sauce
+    # ========================================================================
+    
+    @staticmethod
+    def monte_carlo_simulation(
+        close: pd.Series,
+        simulations: int = 1000,
+        horizon: int = 12
+    ) -> Tuple[float, float]:
+        """
+        Monte Carlo Simulation for probability-based trading
+        
         Returns:
-            AI response
+            (probability_up, expected_price)
         """
-        try:
-            # Build messages
-            messages = conversation_history or []
-            messages.append({
-                "role": "user",
-                "content": message
-            })
-            
-            # Call Bedrock API
-            response = self.client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 2000,
-                    "messages": messages,
-                    "temperature": 0.7
-                })
-            )
-            
-            # Parse response
-            response_body = json.loads(response['body'].read())
-            ai_message = response_body['content'][0]['text']
-            
-            logger.debug(f"AI response generated ({len(ai_message)} chars)")
-            
-            return ai_message
-            
-        except Exception as e:
-            logger.error(f"Bedrock chat error: {e}")
-            return f"Sorry, I encountered an error: {str(e)}"
-    
-    async def generate_strategy(self, prompt: str) -> Dict:
-        """
-        Generate trading strategy from natural language
+        returns = close.pct_change().dropna()
         
-        Args:
-            prompt: User's strategy description
-            
-        Returns:
-            Strategy configuration dictionary
-        """
-        try:
-            # Build strategy generation prompt
-            full_prompt = self.strategy_prompt.format(
-                user_request=prompt,
-                allowed_symbols=settings.ALLOWED_SYMBOLS,
-                max_leverage=settings.MAX_ALLOWED_LEVERAGE,
-                current_date=datetime.utcnow().strftime("%Y-%m-%d")
-            )
-            
-            # Call Claude
-            messages = [{"role": "user", "content": full_prompt}]
-            
-            response = self.client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 3000,
-                    "messages": messages,
-                    "temperature": 0.3  # Lower temperature for strategy
-                })
-            )
-            
-            response_body = json.loads(response['body'].read())
-            strategy_text = response_body['content'][0]['text']
-            
-            # Parse strategy JSON from response
-            strategy = self._parse_strategy_response(strategy_text)
-            
-            logger.info(f"Strategy generated: {strategy.get('name', 'Unnamed')}")
-            
-            return strategy
-            
-        except Exception as e:
-            logger.error(f"Strategy generation error: {e}")
-            raise
-    
-    async def analyze_market(
-        self,
-        indicators: Dict,
-        symbol: str,
-        timeframe: str
-    ) -> str:
-        """
-        Get AI analysis of market conditions
+        if len(returns) < 2:
+            return 0.5, close.iloc[-1]
         
-        Args:
-            indicators: Current indicator values
-            symbol: Trading pair
-            timeframe: Timeframe
-            
-        Returns:
-            Market analysis text
+        # Calculate drift and volatility
+        drift = returns.mean()
+        volatility = returns.std()
+        
+        last_price = close.iloc[-1]
+        
+        # Run simulations
+        final_prices = []
+        for _ in range(simulations):
+            price = last_price
+            for _ in range(horizon):
+                shock = np.random.normal(drift, volatility)
+                price *= (1 + shock)
+            final_prices.append(price)
+        
+        # Calculate probability and expected price
+        probability_up = sum(1 for p in final_prices if p > last_price) / simulations
+        expected_price = np.mean(final_prices)
+        
+        return probability_up, expected_price
+    
+    @staticmethod
+    def garman_klass_volatility(
+        high: pd.Series,
+        low: pd.Series,
+        open_price: pd.Series,
+        close: pd.Series,
+        window: int = 20
+    ) -> float:
         """
-        try:
-            prompt = self.analysis_prompt.format(
-                symbol=symbol,
-                timeframe=timeframe,
-                indicators=json.dumps(indicators, indent=2)
-            )
-            
-            messages = [{"role": "user", "content": prompt}]
-            
-            response = self.client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1500,
-                    "messages": messages,
-                    "temperature": 0.5
-                })
-            )
-            
-            response_body = json.loads(response['body'].read())
-            analysis = response_body['content'][0]['text']
-            
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"Market analysis error: {e}")
-            return "Unable to generate analysis at this time."
+        Garman-Klass Volatility (7.4x more efficient than standard)
+        Uses OHLC data for better volatility estimation
+        """
+        log_hl = (np.log(high) - np.log(low)) ** 2
+        log_co = (np.log(close) - np.log(open_price)) ** 2
+        
+        gk = 0.5 * log_hl - (2 * np.log(2) - 1) * log_co
+        gk_vol = np.sqrt(gk.rolling(window=window).mean() * 252)  # Annualized
+        
+        return gk_vol.iloc[-1] if not gk_vol.empty else 0.0
     
-    def _parse_strategy_response(self, response_text: str) -> Dict:
-        """Parse strategy JSON from AI response"""
-        try:
-            # Try to find JSON in response
-            start = response_text.find('{')
-            end = response_text.rfind('}') + 1
-            
-            if start != -1 and end != 0:
-                json_text = response_text[start:end]
-                strategy = json.loads(json_text)
-                return strategy
-            else:
-                # Fallback: create basic strategy
-                return self._create_default_strategy()
-                
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse strategy JSON, using default")
-            return self._create_default_strategy()
+    @staticmethod
+    def z_score(close: pd.Series, window: int = 20) -> float:
+        """
+        Z-Score for mean reversion signals
+        Perfect for scalping in ranging markets
+        """
+        sma = close.rolling(window=window).mean()
+        std = close.rolling(window=window).std()
+        
+        z = (close - sma) / std
+        return z.iloc[-1] if not z.empty else 0.0
     
-    def _create_default_strategy(self) -> Dict:
-        """Create default strategy"""
-        return {
-            "name": "AI Generated Strategy",
-            "description": "Default scalping strategy with RSI and MACD",
-            "parameters": {
-                "symbols": [settings.DEFAULT_SYMBOL],
-                "timeframe": "5m",
-                "leverage": 10,
-                "risk_per_trade": 0.02,
-                "indicators": {
-                    "rsi_period": 14,
-                    "rsi_oversold": 30,
-                    "rsi_overbought": 70,
-                    "macd_fast": 12,
-                    "macd_slow": 26,
-                    "macd_signal": 9
-                },
-                "entry_conditions": {
-                    "long": "RSI < 30 AND MACD histogram > 0",
-                    "short": "RSI > 70 AND MACD histogram < 0"
-                },
-                "exit_conditions": {
-                    "stop_loss_atr_multiplier": 1.5,
-                    "take_profit_atr_multiplier": 2.5
-                }
-            }
-        }
-    
-    def _load_strategy_prompt(self) -> str:
-        """Load strategy generation prompt template"""
-        return """You are an expert trading strategy designer. Create a comprehensive trading strategy based on the user's request.
-
-User Request: {user_request}
-
-Constraints:
-- Allowed symbols: {allowed_symbols}
-- Maximum leverage: {max_leverage}x
-- Must follow risk management best practices
-
-Generate a complete strategy in JSON format with the following structure:
-{{
-    "name": "Strategy Name",
-    "description": "Strategy description",
-    "parameters": {{
-        "symbols": ["BTC/USDT:USDT"],
-        "timeframe": "5m",
-        "leverage": 10,
-        "risk_per_trade": 0.02,
-        "indicators": {{
-            "rsi_period": 14,
-            "rsi_oversold": 30,
-            "rsi_overbought": 70
-        }},
-        "entry_conditions": {{
-            "long": "Conditions for long entry",
-            "short": "Conditions for short entry"
-        }},
-        "exit_conditions": {{
-            "stop_loss_atr_multiplier": 1.5,
-            "take_profit_atr_multiplier": 2.5
-        }}
-    }}
-}}
-
-Focus on creating a practical, well-balanced strategy. Current date: {current_date}"""
-    
-    def _load_analysis_prompt(self) -> str:
-        """Load market analysis prompt template"""
-        return """Analyze the current market conditions for {symbol} on {timeframe} timeframe.
-
-Current Indicators:
-{indicators}
-
-Provide a concise analysis covering:
-1. Overall market trend (bullish/bearish/neutral)
-2. Key signals from indicators
-3. Potential trading opportunities
-4. Risk factors to consider
-
-Keep the analysis brief and actionable (2-3 paragraphs maximum)."""
-    
-    def test_connection(self) -> bool:
-        """Test Bedrock connection"""
-        try:
-            response = self.client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 100,
-                    "messages": [{"role": "user", "content": "Test"}],
-                    "temperature": 0.5
-                })
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Bedrock connection test failed: {e}")
-            return False
+    @staticmethod
+    def linear_regression_slope(close: pd.Series, window: int = 10) -> float:
+        """
+        Linear Regression Slope for micro-trend detection
+        Catches early momentum shifts
+        """
+        if len(close) < window:
+            return 0.0
+        
+        recent_prices = close.iloc[-window:].values
+        x = np.arange(len(recent_prices))
+        
+        slope, _, _, _, _ = stats.linregress(x, recent_prices)
+        
+        # Normalize slope
+        normalized_slope = slope / close.iloc[-1] if close.iloc[-1] != 0 else 0.0
+        
+        return normalized_slope
 
 
 # Export
-__all__ = ['BedrockClient']
+__all__ = ['TechnicalIndicators']
