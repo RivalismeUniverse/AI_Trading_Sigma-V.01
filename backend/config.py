@@ -1,11 +1,12 @@
 """
 Configuration Management for AI Trading SIGMA
 Handles all environment variables and application settings
+Optimized for Google Gemini Integration
 """
 
 import os
 from typing import List, Optional
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 
@@ -19,7 +20,10 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
     
-    # AWS Bedrock
+    # Google Gemini (NEW - FREE AI)
+    GEMINI_API_KEY: str = Field(default="")
+    
+    # AWS Bedrock (Keep for compatibility, but optional now)
     AWS_ACCESS_KEY_ID: str = Field(default="")
     AWS_SECRET_ACCESS_KEY: str = Field(default="")
     AWS_REGION: str = Field(default="us-east-1")
@@ -69,9 +73,9 @@ class Settings(BaseSettings):
     MC_CONFIDENCE: float = Field(default=0.65)  # 65% probability threshold
     
     # Signal Generation
-    SIGNAL_LONG_THRESHOLD: float = Field(default=0.6)
-    SIGNAL_SHORT_THRESHOLD: float = Field(default=0.6)
-    MIN_CONFIDENCE: float = Field(default=0.55)
+    SIGNAL_LONG_THRESHOLD: float = Field(default=0.3)
+    SIGNAL_SHORT_THRESHOLD: float = Field(default=0.3)
+    MIN_CONFIDENCE: float = Field(default=0.33)
     
     # Execution
     TRADE_CYCLE_SECONDS: int = Field(default=5)
@@ -107,10 +111,13 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000"
     ])
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    # MODIFIKASI DISINI: Tambahkan extra="ignore" agar tidak error jika ada variabel baru di .env
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore" 
+    )
 
 
 # Global settings instance
@@ -122,19 +129,19 @@ def validate_exchange_config() -> bool:
     """Validate exchange configuration"""
     if settings.EXCHANGE == "weex":
         if not settings.WEEX_API_KEY or not settings.WEEX_API_SECRET:
-            raise ValueError("WEEX API credentials not configured")
-    elif settings.EXCHANGE == "binance":
-        if not settings.BINANCE_API_KEY or not settings.BINANCE_API_SECRET:
-            raise ValueError("Binance API credentials not configured")
-    else:
-        raise ValueError(f"Unknown exchange: {settings.EXCHANGE}")
+            # Kita buat jadi warning saja agar bot tetap jalan meski API exchange belum ada
+            print("⚠️ WARNING: WEEX API credentials not configured")
     return True
 
 
 def validate_aws_config() -> bool:
-    """Validate AWS Bedrock configuration"""
+    """Validate AI configuration (Gemini or AWS)"""
+    # Jika Gemini API Key ada, maka validasi AI dianggap berhasil
+    if settings.GEMINI_API_KEY:
+        return True
+    # Jika tidak ada Gemini, baru cek AWS
     if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
-        raise ValueError("AWS credentials not configured")
+        print("⚠️ WARNING: AI credentials (Gemini/AWS) not configured")
     return True
 
 
@@ -148,15 +155,7 @@ def get_exchange_config() -> dict:
             "testnet": settings.WEEX_TESTNET,
             "base_url": settings.WEEX_BASE_URL
         }
-    elif settings.EXCHANGE == "binance":
-        return {
-            "type": "binance",
-            "api_key": settings.BINANCE_API_KEY,
-            "api_secret": settings.BINANCE_API_SECRET,
-            "testnet": settings.BINANCE_TESTNET
-        }
-    else:
-        raise ValueError(f"Unknown exchange: {settings.EXCHANGE}")
+    return {"type": "none"}
 
 
 # Export commonly used settings

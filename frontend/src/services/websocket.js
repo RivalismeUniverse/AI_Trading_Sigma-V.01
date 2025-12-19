@@ -3,7 +3,7 @@
  * Real-time updates from backend
  */
 
-const WS_BASE_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
+const WS_BASE_URL = process.env.REACT_APP_WS_URL || 'https://orange-space-lamp-qvq7r9w4j5qh6vw-8000.app.github.dev';
 
 class WebSocketService {
   constructor() {

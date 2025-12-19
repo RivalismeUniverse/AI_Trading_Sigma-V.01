@@ -173,4 +173,6 @@ Return ONLY valid JSON."""
 # Export as BedrockClient to maintain compatibility with main.py
 BedrockClient = GeminiClient
 
+<<<<<<< HEAD
 __all__ = ['GeminiClient', 'BedrockClient']
+

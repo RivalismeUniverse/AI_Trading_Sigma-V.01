@@ -4,17 +4,12 @@
  */
 
 import axios from 'axios';
-
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_URL = 'https://orange-space-lamp-qvq7r9w4j5qh6vw-8000.app.github.dev';
 
 const api = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: `${API_URL}`,
+  headers: { 'Content-Type': 'application/json' }
 });
-
 // Response interceptor for error handling
 api.interceptors.response.use(
   response => response.data,

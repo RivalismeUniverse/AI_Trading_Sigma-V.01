@@ -1,13 +1,13 @@
 """
 Technical Indicators - 16 Indicators (12 Basic + 4 Advanced)
-Complete indicator suite for scalping strategy
+Complete indicator suite for AI Trading Sigma-V.01
+Optimized for stability with WEEX Bypass
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple
 from scipy import stats
-
 
 class TechnicalIndicators:
     """
@@ -18,291 +18,194 @@ class TechnicalIndicators:
     @staticmethod
     def calculate_all(df: pd.DataFrame) -> Dict[str, float]:
         """
-        Calculate all indicators at once
-        
-        Args:
-            df: DataFrame with OHLCV data
-            
-        Returns:
-            Dictionary with all indicator values
+        Calculate all indicators at once with safety fallback
         """
-        indicators = {}
+        # 1. DATA SANITIZER: Pastikan kolom huruf kecil (close, high, low, open, volume)
+        df.columns = [x.lower() for x in df.columns]
         
-        # Basic Momentum Indicators
-        indicators['rsi'] = TechnicalIndicators.rsi(df['close'])
-        macd, signal, histogram = TechnicalIndicators.macd(df['close'])
-        indicators['macd'] = macd
-        indicators['macd_signal'] = signal
-        indicators['macd_histogram'] = histogram
+        # Ambil harga terakhir untuk default value
+        last_price = df['close'].iloc[-1] if not df.empty else 0.0
         
-        stoch_k, stoch_d = TechnicalIndicators.stochastic(df['high'], df['low'], df['close'])
-        indicators['stoch_k'] = stoch_k
-        indicators['stoch_d'] = stoch_d
-        
-        # Trend Indicators
-        indicators['ema_9'] = TechnicalIndicators.ema(df['close'], 9)
-        indicators['ema_20'] = TechnicalIndicators.ema(df['close'], 20)
-        indicators['ema_50'] = TechnicalIndicators.ema(df['close'], 50)
-        indicators['ema_200'] = TechnicalIndicators.ema(df['close'], 200)
-        indicators['sma_20'] = TechnicalIndicators.sma(df['close'], 20)
-        
-        # Volatility Indicators
-        bb_upper, bb_middle, bb_lower = TechnicalIndicators.bollinger_bands(df['close'])
-        indicators['bb_upper'] = bb_upper
-        indicators['bb_middle'] = bb_middle
-        indicators['bb_lower'] = bb_lower
-        indicators['bb_width'] = (bb_upper - bb_lower) / bb_middle if bb_middle != 0 else 0
-        indicators['atr'] = TechnicalIndicators.atr(df['high'], df['low'], df['close'])
-        
-        # Strength Indicators
-        indicators['adx'] = TechnicalIndicators.adx(df['high'], df['low'], df['close'])
-        indicators['cci'] = TechnicalIndicators.cci(df['high'], df['low'], df['close'])
-        indicators['mfi'] = TechnicalIndicators.mfi(df['high'], df['low'], df['close'], df['volume'])
-        
-        # Volume Indicators
-        indicators['obv'] = TechnicalIndicators.obv(df['close'], df['volume'])
-        indicators['vwap'] = TechnicalIndicators.vwap(df['high'], df['low'], df['close'], df['volume'])
-        
-        # Advanced Indicators (Our Secret Sauce)
-        indicators['mc_probability'], indicators['mc_expected_price'] = TechnicalIndicators.monte_carlo_simulation(df['close'])
-        indicators['gk_volatility'] = TechnicalIndicators.garman_klass_volatility(df['high'], df['low'], df['open'], df['close'])
-        indicators['z_score'] = TechnicalIndicators.z_score(df['close'])
-        indicators['lr_slope'] = TechnicalIndicators.linear_regression_slope(df['close'])
-        
+        # 2. DEFAULT VALUES: Mencegah KeyError ('rsi', 'current_price', dll)
+        # Jika data belum cukup, bot akan menggunakan nilai netral ini
+        indicators = {
+            'current_price': last_price,
+            'rsi': 50.0,
+            'macd': 0.0, 'macd_signal': 0.0, 'macd_histogram': 0.0,
+            'stoch_k': 50.0, 'stoch_d': 50.0,
+            'ema_9': last_price, 'ema_20': last_price, 
+            'ema_50': last_price, 'ema_200': last_price, 
+            'sma_20': last_price,
+            'bb_upper': last_price, 'bb_middle': last_price, 'bb_lower': last_price, 
+            'bb_width': 0.0,
+            'atr': 0.0, 'adx': 20.0, 'cci': 0.0, 'mfi': 50.0,
+            'obv': 0.0, 'vwap': last_price,
+            'mc_probability': 0.5, 'mc_expected_price': last_price,
+            'gk_volatility': 0.0, 'z_score': 0.0, 'lr_slope': 0.0
+        }
+
+        # 3. VALIDATION: Minimal butuh beberapa baris data untuk mulai hitung
+        if len(df) < 5:
+            return indicators
+
+        try:
+            # 4. CALCULATE: Mulai menimpa nilai default dengan hasil asli
+            # Momentum
+            indicators['rsi'] = TechnicalIndicators.rsi(df['close'])
+            macd, signal, histogram = TechnicalIndicators.macd(df['close'])
+            indicators.update({'macd': macd, 'macd_signal': signal, 'macd_histogram': histogram})
+            
+            sk, sd = TechnicalIndicators.stochastic(df['high'], df['low'], df['close'])
+            indicators.update({'stoch_k': sk, 'stoch_d': sd})
+            
+            # Trend
+            indicators['ema_9'] = TechnicalIndicators.ema(df['close'], 9)
+            indicators['ema_20'] = TechnicalIndicators.ema(df['close'], 20)
+            indicators['ema_50'] = TechnicalIndicators.ema(df['close'], 50)
+            indicators['ema_200'] = TechnicalIndicators.ema(df['close'], 200)
+            indicators['sma_20'] = TechnicalIndicators.sma(df['close'], 20)
+            
+            # Volatility
+            bbu, bbm, bbl = TechnicalIndicators.bollinger_bands(df['close'])
+            indicators.update({'bb_upper': bbu, 'bb_middle': bbm, 'bb_lower': bbl})
+            indicators['bb_width'] = (bbu - bbl) / bbm if bbm != 0 else 0
+            indicators['atr'] = TechnicalIndicators.atr(df['high'], df['low'], df['close'])
+            
+            # Strength
+            indicators['adx'] = TechnicalIndicators.adx(df['high'], df['low'], df['close'])
+            indicators['cci'] = TechnicalIndicators.cci(df['high'], df['low'], df['close'])
+            indicators['mfi'] = TechnicalIndicators.mfi(df['high'], df['low'], df['close'], df['volume'])
+            
+            # Volume
+            indicators['obv'] = TechnicalIndicators.obv(df['close'], df['volume'])
+            indicators['vwap'] = TechnicalIndicators.vwap(df['high'], df['low'], df['close'], df['volume'])
+            
+            # Advanced (Secret Sauce)
+            prob, exp_p = TechnicalIndicators.monte_carlo_simulation(df['close'])
+            indicators.update({'mc_probability': prob, 'mc_expected_price': exp_p})
+            indicators['gk_volatility'] = TechnicalIndicators.garman_klass_volatility(df['high'], df['low'], df['open'], df['close'])
+            indicators['z_score'] = TechnicalIndicators.z_score(df['close'])
+            indicators['lr_slope'] = TechnicalIndicators.linear_regression_slope(df['close'])
+
+        except Exception as e:
+            # Jika ada error kalkulasi, tetap kembalikan dict yang sudah ada agar bot tidak crash
+            print(f"Indicator calculation warning: {e}")
+            
         return indicators
-    
-    # ========================================================================
-    # BASIC INDICATORS (12)
-    # ========================================================================
+
+    # --- IMPLEMENTASI INDIKATOR ---
     
     @staticmethod
     def rsi(close: pd.Series, period: int = 14) -> float:
-        """Relative Strength Index"""
+        if len(close) < period: return 50.0
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
-        return rsi.iloc[-1] if not rsi.empty else 50.0
-    
+        val = rsi.iloc[-1]
+        return val if not np.isnan(val) else 50.0
+
     @staticmethod
     def macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[float, float, float]:
-        """Moving Average Convergence Divergence"""
         ema_fast = close.ewm(span=fast, adjust=False).mean()
         ema_slow = close.ewm(span=slow, adjust=False).mean()
         macd_line = ema_fast - ema_slow
         signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        histogram = macd_line - signal_line
-        
-        return (
-            macd_line.iloc[-1] if not macd_line.empty else 0.0,
-            signal_line.iloc[-1] if not signal_line.empty else 0.0,
-            histogram.iloc[-1] if not histogram.empty else 0.0
-        )
-    
+        return macd_line.iloc[-1], signal_line.iloc[-1], (macd_line - signal_line).iloc[-1]
+
     @staticmethod
     def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> Tuple[float, float]:
-        """Stochastic Oscillator"""
-        lowest_low = low.rolling(window=period).min()
-        highest_high = high.rolling(window=period).max()
-        
-        stoch_k = 100 * (close - lowest_low) / (highest_high - lowest_low)
+        if len(close) < period: return 50.0, 50.0
+        low_min = low.rolling(window=period).min()
+        high_max = high.rolling(window=period).max()
+        stoch_k = 100 * (close - low_min) / (high_max - low_min)
         stoch_d = stoch_k.rolling(window=3).mean()
-        
-        return (
-            stoch_k.iloc[-1] if not stoch_k.empty else 50.0,
-            stoch_d.iloc[-1] if not stoch_d.empty else 50.0
-        )
-    
+        return stoch_k.fillna(50.0).iloc[-1], stoch_d.fillna(50.0).iloc[-1]
+
     @staticmethod
     def ema(close: pd.Series, period: int) -> float:
-        """Exponential Moving Average"""
-        ema = close.ewm(span=period, adjust=False).mean()
-        return ema.iloc[-1] if not ema.empty else close.iloc[-1]
-    
+        return close.ewm(span=period, adjust=False).mean().iloc[-1]
+
     @staticmethod
     def sma(close: pd.Series, period: int) -> float:
-        """Simple Moving Average"""
-        sma = close.rolling(window=period).mean()
-        return sma.iloc[-1] if not sma.empty else close.iloc[-1]
-    
+        return close.rolling(window=period).mean().iloc[-1]
+
     @staticmethod
     def bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> Tuple[float, float, float]:
-        """Bollinger Bands"""
         sma = close.rolling(window=period).mean()
         std = close.rolling(window=period).std()
-        
-        upper = sma + (std * std_dev)
-        lower = sma - (std * std_dev)
-        
-        return (
-            upper.iloc[-1] if not upper.empty else close.iloc[-1],
-            sma.iloc[-1] if not sma.empty else close.iloc[-1],
-            lower.iloc[-1] if not lower.empty else close.iloc[-1]
-        )
-    
+        return (sma + (std * std_dev)).iloc[-1], sma.iloc[-1], (sma - (std * std_dev)).iloc[-1]
+
     @staticmethod
     def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
-        """Average True Range"""
-        high_low = high - low
-        high_close = np.abs(high - close.shift())
-        low_close = np.abs(low - close.shift())
-        
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        atr = true_range.rolling(window=period).mean()
-        
-        return atr.iloc[-1] if not atr.empty else 0.0
-    
+        tr = pd.concat([high - low, np.abs(high - close.shift()), np.abs(low - close.shift())], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean().iloc[-1]
+
     @staticmethod
     def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
-        """Average Directional Index"""
-        plus_dm = high.diff()
-        minus_dm = -low.diff()
-        
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm < 0] = 0
-        
+        if len(close) < period: return 20.0
+        plus_dm = high.diff().clip(lower=0)
+        minus_dm = (-low.diff()).clip(lower=0)
         tr = pd.concat([high - low, np.abs(high - close.shift()), np.abs(low - close.shift())], axis=1).max(axis=1)
         atr = tr.rolling(window=period).mean()
-        
-        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
-        
+        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.rolling(window=period).mean()
-        
-        return adx.iloc[-1] if not adx.empty else 0.0
-    
+        return dx.rolling(window=period).mean().iloc[-1]
+
     @staticmethod
     def cci(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 20) -> float:
-        """Commodity Channel Index"""
-        typical_price = (high + low + close) / 3
-        sma = typical_price.rolling(window=period).mean()
-        mean_deviation = typical_price.rolling(window=period).apply(lambda x: np.abs(x - x.mean()).mean())
-        
-        cci = (typical_price - sma) / (0.015 * mean_deviation)
-        return cci.iloc[-1] if not cci.empty else 0.0
-    
+        tp = (high + low + close) / 3
+        sma = tp.rolling(window=period).mean()
+        mad = tp.rolling(window=period).apply(lambda x: np.abs(x - x.mean()).mean())
+        return ((tp - sma) / (0.015 * mad)).iloc[-1]
+
     @staticmethod
     def mfi(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, period: int = 14) -> float:
-        """Money Flow Index"""
-        typical_price = (high + low + close) / 3
-        money_flow = typical_price * volume
-        
-        positive_flow = money_flow.where(typical_price > typical_price.shift(), 0).rolling(window=period).sum()
-        negative_flow = money_flow.where(typical_price < typical_price.shift(), 0).rolling(window=period).sum()
-        
-        mfi = 100 - (100 / (1 + positive_flow / negative_flow))
-        return mfi.iloc[-1] if not mfi.empty else 50.0
-    
+        tp = (high + low + close) / 3
+        pos_mf = (tp * volume).where(tp > tp.shift(), 0).rolling(period).sum()
+        neg_mf = (tp * volume).where(tp < tp.shift(), 0).rolling(period).sum()
+        res = 100 - (100 / (1 + pos_mf / neg_mf)).iloc[-1]
+        return res if not np.isnan(res) else 50.0
+
     @staticmethod
     def obv(close: pd.Series, volume: pd.Series) -> float:
-        """On-Balance Volume"""
-        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
-        return obv.iloc[-1] if not obv.empty else 0.0
-    
+        return (np.sign(close.diff()).fillna(0) * volume).cumsum().iloc[-1]
+
     @staticmethod
     def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> float:
-        """Volume Weighted Average Price"""
-        typical_price = (high + low + close) / 3
-        vwap = (typical_price * volume).cumsum() / volume.cumsum()
-        return vwap.iloc[-1] if not vwap.empty else close.iloc[-1]
-    
-    # ========================================================================
-    # ADVANCED INDICATORS (4) - Our Secret Sauce
-    # ========================================================================
-    
+        tp = (high + low + close) / 3
+        return (tp * volume).cumsum().iloc[-1] / volume.cumsum().iloc[-1]
+
     @staticmethod
-    def monte_carlo_simulation(
-        close: pd.Series,
-        simulations: int = 1000,
-        horizon: int = 12
-    ) -> Tuple[float, float]:
-        """
-        Monte Carlo Simulation for probability-based trading
-        
-        Returns:
-            (probability_up, expected_price)
-        """
+    def monte_carlo_simulation(close: pd.Series, simulations: int = 50, horizon: int = 10) -> Tuple[float, float]:
         returns = close.pct_change().dropna()
-        
-        if len(returns) < 2:
-            return 0.5, close.iloc[-1]
-        
-        # Calculate drift and volatility
-        drift = returns.mean()
-        volatility = returns.std()
-        
-        last_price = close.iloc[-1]
-        
-        # Run simulations
-        final_prices = []
-        for _ in range(simulations):
-            price = last_price
-            for _ in range(horizon):
-                shock = np.random.normal(drift, volatility)
-                price *= (1 + shock)
-            final_prices.append(price)
-        
-        # Calculate probability and expected price
-        probability_up = sum(1 for p in final_prices if p > last_price) / simulations
-        expected_price = np.mean(final_prices)
-        
-        return probability_up, expected_price
-    
+        if len(returns) < 5: return 0.5, close.iloc[-1]
+        drift, vol = returns.mean(), returns.std()
+        shocks = np.random.normal(drift, vol, (simulations, horizon))
+        final_prices = close.iloc[-1] * np.prod(1 + shocks, axis=1)
+        return np.mean(final_prices > close.iloc[-1]), np.mean(final_prices)
+
     @staticmethod
-    def garman_klass_volatility(
-        high: pd.Series,
-        low: pd.Series,
-        open_price: pd.Series,
-        close: pd.Series,
-        window: int = 20
-    ) -> float:
-        """
-        Garman-Klass Volatility (7.4x more efficient than standard)
-        Uses OHLC data for better volatility estimation
-        """
+    def garman_klass_volatility(high: pd.Series, low: pd.Series, open_price: pd.Series, close: pd.Series, window: int = 20) -> float:
+        if len(close) < window: return 0.0
         log_hl = (np.log(high) - np.log(low)) ** 2
         log_co = (np.log(close) - np.log(open_price)) ** 2
-        
         gk = 0.5 * log_hl - (2 * np.log(2) - 1) * log_co
-        gk_vol = np.sqrt(gk.rolling(window=window).mean() * 252)  # Annualized
-        
-        return gk_vol.iloc[-1] if not gk_vol.empty else 0.0
-    
+        return np.sqrt(gk.rolling(window=window).mean().iloc[-1] * 252)
+
     @staticmethod
     def z_score(close: pd.Series, window: int = 20) -> float:
-        """
-        Z-Score for mean reversion signals
-        Perfect for scalping in ranging markets
-        """
-        sma = close.rolling(window=window).mean()
-        std = close.rolling(window=window).std()
-        
-        z = (close - sma) / std
-        return z.iloc[-1] if not z.empty else 0.0
-    
+        if len(close) < window: return 0.0
+        return ((close - close.rolling(window).mean()) / close.rolling(window).std()).iloc[-1]
+
     @staticmethod
     def linear_regression_slope(close: pd.Series, window: int = 10) -> float:
-        """
-        Linear Regression Slope for micro-trend detection
-        Catches early momentum shifts
-        """
-        if len(close) < window:
-            return 0.0
-        
-        recent_prices = close.iloc[-window:].values
-        x = np.arange(len(recent_prices))
-        
-        slope, _, _, _, _ = stats.linregress(x, recent_prices)
-        
-        # Normalize slope
-        normalized_slope = slope / close.iloc[-1] if close.iloc[-1] != 0 else 0.0
-        
-        return normalized_slope
+        if len(close) < window: return 0.0
+        y = close.iloc[-window:].values
+        x = np.arange(len(y))
+        slope, _, _, _, _ = stats.linregress(x, y)
+        return slope / y[-1]
 
-
-# Export
 __all__ = ['TechnicalIndicators']
