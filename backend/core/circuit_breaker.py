@@ -33,7 +33,6 @@ class CircuitState(str, Enum):
     HALT = "halt"            # Level 3: Emergency stop
     SHUTDOWN = "shutdown"    # Level 4: Fatal shutdown
 
-
 class IssueType(str, Enum):
     """Types of issues that can trigger circuit breaker"""
     API_LATENCY = "api_latency"
@@ -47,7 +46,11 @@ class IssueType(str, Enum):
     RATE_LIMIT = "rate_limit"
     MEMORY_ERROR = "memory_error"
     SECURITY_BREACH = "security_breach"
-
+    
+    # NEW: Strategy monitoring
+    STRATEGY_DEGRADATION = "strategy_degradation"  # NEW
+    EXPECTANCY_COLLAPSE = "expectancy_collapse"     # NEW
+    REGIME_MISMATCH = "regime_mismatch"             # NEW
 
 @dataclass
 class CircuitConfig:
@@ -289,6 +292,51 @@ class CircuitBreaker:
                 'loss_pct': loss_pct * 100,
                 **details
             })
+
+    def report_strategy_degradation(self, degradation_report: Dict):
+        """
+        Report strategy performance degradation
+        
+        Args:
+            degradation_report: Report from StrategyMonitor
+        """
+        severity = degradation_report.get('severity', 'unknown')
+        
+        logger.warning(f"Strategy degradation reported: {severity}")
+        
+        if severity == 'critical':
+            self._escalate_to_halt(IssueType.STRATEGY_DEGRADATION, {
+                'severity': severity,
+                'issues': degradation_report.get('issues', []),
+                'metrics': degradation_report.get('metrics', {})
+            })
+        elif severity == 'severe':
+            self._escalate_to_throttle(IssueType.STRATEGY_DEGRADATION, {
+                'severity': severity,
+                'issues': degradation_report.get('issues', [])
+            })
+        elif severity == 'moderate':
+            self._escalate_to_alert(IssueType.STRATEGY_DEGRADATION, {
+                'severity': severity,
+                'issues': degradation_report.get('issues', [])
+            })
+    
+    def report_expectancy_collapse(self, expectancy_data: Dict):
+        """
+        Report negative expectancy detected
+        
+        Args:
+            expectancy_data: Expectancy metrics
+        """
+        expectancy = expectancy_data.get('expectancy', 0)
+        sample_size = expectancy_data.get('sample_size', 0)
+        
+        if expectancy < -50 and sample_size > 50:
+            # Critical negative expectancy with sufficient sample
+            self._escalate_to_halt(IssueType.EXPECTANCY_COLLAPSE, expectancy_data)
+        elif expectancy < 0 and sample_size > 30:
+            # Negative expectancy detected
+            self._escalate_to_throttle(IssueType.EXPECTANCY_COLLAPSE, expectancy_data)
     
     # ========================================================================
     # STATE ESCALATION
