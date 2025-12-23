@@ -163,7 +163,7 @@ class StrategyMonitor:
         if std_return == 0:
             sharpe = 0
         else:
-        sharpe = (mean_return / std_return) * np.sqrt(252)  # Annualized
+            sharpe = (mean_return / std_return) * np.sqrt(252)  # Annualized
         
         metrics['sharpe_ratio'] = sharpe
         metrics['mean_return'] = mean_return
