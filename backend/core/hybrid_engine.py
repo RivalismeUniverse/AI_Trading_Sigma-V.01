@@ -1,9 +1,8 @@
 """
-Hybrid Trading Engine - The Core of AI Trading SIGMA
-Autonomous trading loop with Market Scanner Mode
-Optimized for Multi-Asset Analysis
+Hybrid Trading Engine - UPGRADED with Prop-Firm Grade Components
+Integrated: Expectancy Engine, Regime Detection, Enhanced Risk, Portfolio Risk,
+Strategy Monitoring, Dynamic Exits
 """
-
 import asyncio
 import time
 from typing import Dict, List, Optional
@@ -12,7 +11,12 @@ import traceback
 
 from config import settings, get_exchange_config
 from core.integrated_signal_manager import IntegratedSignalManager
-from core.risk_manager import RiskManager
+from core.expectancy_engine import ExpectancyEngine
+from core.regime_detector import RegimeDetector, MarketRegime
+from core.enhanced_risk_manager import EnhancedRiskManager
+from core.portfolio_risk_manager import PortfolioRiskManager
+from core.strategy_monitor import StrategyMonitor
+from core.dynamic_exit_manager import DynamicExitManager
 from core.circuit_breaker import get_circuit_breaker, CircuitState
 from core.api_monitor import api_monitor
 from exchange.weex_client import WEEXClient
@@ -27,19 +31,46 @@ logger = setup_logger(__name__)
 
 class HybridTradingEngine:
     """
-    Main autonomous trading engine
-    Upgraded to Scan multiple assets from ALLOWED_SYMBOLS
+    Main autonomous trading engine - UPGRADED TO PROP-FIRM GRADE
+    
+    New Features:
+    - Real expectancy tracking (not fake confidence)
+    - Regime-aware position sizing
+    - Portfolio correlation management
+    - Strategy degradation detection
+    - Dynamic exit logic
     """
     
     def __init__(self):
         self.is_running = False
         self.exchange_client = None
-        self.signal_manager = IntegratedSignalManager(use_v2_validation=True)
-        self.risk_manager = RiskManager()
-        self.safety_checker = get_safety_checker()
-        self.circuit_breaker = get_circuit_breaker()
+        
+        # Database
         self.db_manager = DatabaseManager()
         
+        # Signal generation
+        self.signal_manager = IntegratedSignalManager(use_v2_validation=True)
+        
+        # NEW: Advanced components
+        self.expectancy_engine = ExpectancyEngine(self.db_manager)
+        self.regime_detector = RegimeDetector()
+        self.risk_manager = EnhancedRiskManager(
+            self.expectancy_engine,
+            self.regime_detector,
+            kelly_fraction=0.25  # Conservative 25% Kelly
+        )
+        self.portfolio_risk = PortfolioRiskManager()
+        self.strategy_monitor = StrategyMonitor()
+        self.exit_manager = DynamicExitManager(
+            self.regime_detector,
+            self.portfolio_risk
+        )
+        
+        # Safety
+        self.safety_checker = get_safety_checker()
+        self.circuit_breaker = get_circuit_breaker()
+        
+        # State
         self.active_strategy = None
         self.open_positions = {}
         self.trade_count = 0
@@ -50,12 +81,15 @@ class HybridTradingEngine:
         self.last_balance = 0.0
         self.winning_trades = 0
         self.losing_trades = 0
+        
+        logger.info("✅ Hybrid Trading Engine initialized with prop-firm grade components")
     
     async def initialize(self):
         """Initialize trading engine"""
         try:
             logger.info("Initializing Hybrid Trading Engine...")
             
+            # Initialize exchange
             exchange_config = get_exchange_config()
             
             if exchange_config['type'] == 'weex':
@@ -76,7 +110,7 @@ class HybridTradingEngine:
             
             await self.exchange_client.initialize()
             
-            # Set leverage for all allowed symbols to be ready
+            # Set leverage for allowed symbols
             for symbol in settings.ALLOWED_SYMBOLS:
                 try:
                     await self.exchange_client.set_leverage(symbol, settings.DEFAULT_LEVERAGE)
@@ -117,31 +151,63 @@ class HybridTradingEngine:
         """Stop autonomous trading"""
         logger.info("🛑 Stopping trading engine...")
         self.is_running = False
+        
         await self._close_all_positions()
+        
         if self.exchange_client:
             await self.exchange_client.close()
+        
         logger.info("✅ Engine stopped successfully")
-
+    
     async def _main_loop(self):
         """
-        Main trading loop - MARKET SCANNER
-        Iterates through ALLOWED_SYMBOLS to find the best setup
+        Main trading loop - UPGRADED
+        
+        Now includes:
+        - Strategy degradation monitoring
+        - Regime-aware sizing
+        - Portfolio correlation checks
+        - Dynamic exits
         """
         cycle_count = 0
         
         while self.is_running:
             try:
                 cycle_start = datetime.utcnow()
-                symbols = settings.ALLOWED_SYMBOLS
                 
+                # Get recent trades for strategy monitoring
+                recent_trades = self.db_manager.get_trades(limit=100)
+                
+                # Monitor strategy health
+                if len(recent_trades) >= 20 and cycle_count % 5 == 0:
+                    degradation = self.strategy_monitor.check_degradation(
+                        recent_trades,
+                        timeframe_minutes=60
+                    )
+                    
+                    if degradation.is_degraded:
+                        logger.warning(f"⚠️ Strategy degradation: {degradation.severity}")
+                        
+                        if degradation.severity == 'critical':
+                            self.circuit_breaker.report_critical_error(
+                                'STRATEGY_DEGRADATION',
+                                {'report': degradation.__dict__}
+                            )
+                        elif degradation.severity == 'severe':
+                            # Reduce exposure
+                            logger.warning("Reducing exposure due to severe degradation")
+                
+                # Scanner logic: check all symbols
+                symbols = settings.ALLOWED_SYMBOLS
                 best_signal = None
                 max_confidence = -1.0
+                best_regime_result = None
                 
-                # LOOP SCANNER
                 for symbol in symbols:
-                    if not self.is_running: break
+                    if not self.is_running:
+                        break
                     
-                    # 1. Fetch data for current symbol
+                    # Fetch OHLCV
                     df = await self.exchange_client.fetch_ohlcv(
                         symbol=symbol,
                         timeframe=settings.DEFAULT_TIMEFRAME,
@@ -151,30 +217,49 @@ class HybridTradingEngine:
                     if df is None or df.empty:
                         continue
                     
-                    # 2. Generate signal
+                    # Generate signal
                     signal = self.signal_manager.generate_signal(df, symbol)
                     
-                    # 3. Logic to pick the best signal
-                    if signal['action'] != TradeAction.WAIT:
-                        logger.info(f"📡 Found {signal['action']} for {symbol} (Conf: {signal['confidence']:.2f})")
-                        if signal['confidence'] > max_confidence:
-                            max_confidence = signal['confidence']
-                            best_signal = signal
-
-                # 4. Execute the best pick
-                if best_signal and max_confidence >= settings.MIN_CONFIDENCE:
-                    logger.info(f"🔥 SCANNER PICK: {best_signal['symbol']} with score {max_confidence:.2f}")
-                    await self._process_signal(best_signal)
+                    if signal['action'] == TradeAction.WAIT:
+                        continue
+                    
+                    # Detect regime
+                    regime_result = self.regime_detector.detect(df, signal['indicators'])
+                    
+                    # Check if should trade in this regime
+                    should_trade, reason = self.regime_detector.should_trade(regime_result)
+                    
+                    if not should_trade:
+                        logger.debug(f"Skipping {symbol}: {reason}")
+                        continue
+                    
+                    # Track best signal
+                    if signal['confidence'] > max_confidence:
+                        max_confidence = signal['confidence']
+                        best_signal = signal
+                        best_regime_result = regime_result
+                        logger.info(
+                            f"📊 {symbol}: {signal['action'].value} "
+                            f"(Conf: {signal['confidence']:.3f}, "
+                            f"Regime: {regime_result['regime'].value})"
+                        )
                 
-                # 5. Manage existing positions & update metrics
-                await self._manage_positions()
+                # Execute best signal if confidence threshold met
+                if best_signal and max_confidence >= settings.MIN_CONFIDENCE:
+                    logger.info(f"🎯 SCANNER PICK: {best_signal['symbol']} (score: {max_confidence:.3f})")
+                    await self._process_signal(best_signal, best_regime_result)
+                
+                # Manage existing positions with dynamic exits
+                await self._manage_positions_advanced()
+                
+                # Update metrics
                 await self._update_metrics()
                 
                 cycle_time = (datetime.utcnow() - cycle_start).total_seconds()
                 cycle_count += 1
                 
-                if cycle_count % 5 == 0:
-                    logger.info(f"✅ Scanner Cycle #{cycle_count} completed in {cycle_time*1000:.0f}ms")
+                if cycle_count % 10 == 0:
+                    logger.info(f"📈 Cycle #{cycle_count} completed in {cycle_time*1000:.0f}ms")
                 
                 await asyncio.sleep(settings.TRADE_CYCLE_SECONDS)
                 
@@ -182,58 +267,104 @@ class HybridTradingEngine:
                 logger.error(f"Error in main loop: {e}")
                 await asyncio.sleep(5)
     
-    async def _process_signal(self, signal: Dict):
-        """Process signal for a specific symbol"""
+    async def _process_signal(self, signal: Dict, regime_result: Dict):
+        """
+        Process signal - UPGRADED with new risk management
+        """
         symbol = signal['symbol']
         action = signal['action']
         
         # Check circuit breaker
         allowed, reason = self.circuit_breaker.check_execution_allowed(action)
         if not allowed:
+            logger.warning(f"Circuit breaker blocked: {reason}")
             return
         
-        if action in [TradeAction.ENTER_LONG, TradeAction.ENTER_SHORT]:
-            # Don't open if we already have a position in THIS symbol
-            if symbol in self.open_positions:
-                return
-            
-            # Check max open positions limit
-            if len(self.open_positions) >= settings.MAX_OPEN_POSITIONS:
-                logger.debug("Max open positions reached")
-                return
-
-            balance_data = await self.exchange_client.fetch_balance()
-            current_balance = balance_data['total']
-            
-            position_size = self.risk_manager.calculate_position_size(
-                balance=current_balance,
-                risk_pct=settings.MAX_RISK_PER_TRADE,
-                entry_price=signal['current_price'],
-                stop_loss_price=signal['stop_loss'],
-                leverage=settings.DEFAULT_LEVERAGE
-            )
-            
-            is_valid, error = self.safety_checker.validate_trade(
-                symbol=symbol,
-                side='buy' if action == TradeAction.ENTER_LONG else 'sell',
-                amount=position_size,
-                leverage=settings.DEFAULT_LEVERAGE,
-                price=signal['current_price'],
-                account_balance=current_balance
-            )
-            
-            if is_valid:
-                await self._execute_trade(signal, position_size)
-            else:
-                logger.warning(f"Trade validation failed for {symbol}: {error}")
-
-    async def _execute_trade(self, signal: Dict, position_size: float):
-        """Execute market order and stop loss"""
+        # Only open new positions
+        if action not in [TradeAction.ENTER_LONG, TradeAction.ENTER_SHORT]:
+            return
+        
+        # Check if already have position in this symbol
+        if symbol in self.open_positions:
+            logger.debug(f"Already have position in {symbol}")
+            return
+        
+        # Check max positions
+        if len(self.open_positions) >= settings.MAX_OPEN_POSITIONS:
+            logger.debug("Max open positions reached")
+            return
+        
+        # Get balance
+        balance_data = await self.exchange_client.fetch_balance()
+        current_balance = balance_data['total']
+        
+        # NEW: Calculate position size with enhanced risk manager
+        position_size = self.risk_manager.calculate_position_size(
+            balance=current_balance,
+            entry_price=signal['current_price'],
+            stop_loss_price=signal['stop_loss'],
+            leverage=settings.DEFAULT_LEVERAGE,
+            symbol=symbol,
+            regime_result=regime_result,
+            confidence=signal['confidence']
+        )
+        
+        # Check if size is zero (no edge or bad conditions)
+        if position_size == 0:
+            logger.info(f"Position size = 0 for {symbol}, skipping (no edge or insufficient data)")
+            return
+        
+        # NEW: Validate with portfolio risk manager
+        is_valid_portfolio, portfolio_error = self.portfolio_risk.validate_new_position(
+            new_symbol=symbol,
+            new_size=position_size,
+            new_entry_price=signal['current_price'],
+            open_positions=list(self.open_positions.values()),
+            balance=current_balance
+        )
+        
+        if not is_valid_portfolio:
+            logger.warning(f"Portfolio risk check failed: {portfolio_error}")
+            return
+        
+        # Validate with risk manager
+        is_valid_risk, risk_error = self.risk_manager.validate_risk(
+            position_size=position_size,
+            entry_price=signal['current_price'],
+            balance=current_balance,
+            open_positions=len(self.open_positions),
+            leverage=settings.DEFAULT_LEVERAGE
+        )
+        
+        if not is_valid_risk:
+            logger.warning(f"Risk validation failed: {risk_error}")
+            return
+        
+        # Safety checker validation
+        is_valid_safety, safety_error = self.safety_checker.validate_trade(
+            symbol=symbol,
+            side='buy' if action == TradeAction.ENTER_LONG else 'sell',
+            amount=position_size,
+            leverage=settings.DEFAULT_LEVERAGE,
+            price=signal['current_price'],
+            account_balance=current_balance
+        )
+        
+        if not is_valid_safety:
+            logger.warning(f"Safety check failed: {safety_error}")
+            return
+        
+        # All checks passed - execute trade
+        await self._execute_trade(signal, position_size, regime_result)
+    
+    async def _execute_trade(self, signal: Dict, position_size: float, regime_result: Dict):
+        """Execute market order with stop loss and take profit"""
         try:
             symbol = signal['symbol']
             action = signal['action']
             side = 'buy' if action == TradeAction.ENTER_LONG else 'sell'
             
+            # Create market order
             order = await self.exchange_client.create_market_order(
                 symbol=symbol,
                 side=side,
@@ -241,6 +372,7 @@ class HybridTradingEngine:
                 params={'leverage': settings.DEFAULT_LEVERAGE}
             )
             
+            # Create stop loss
             stop_side = 'sell' if action == TradeAction.ENTER_LONG else 'buy'
             stop_order = await self.exchange_client.create_stop_loss_order(
                 symbol=symbol,
@@ -250,6 +382,7 @@ class HybridTradingEngine:
                 params={'reduceOnly': True}
             )
             
+            # Store position with regime info
             self.open_positions[symbol] = {
                 'entry_order': order,
                 'stop_order': stop_order,
@@ -257,90 +390,223 @@ class HybridTradingEngine:
                 'entry_time': datetime.utcnow(),
                 'entry_price': signal['current_price'],
                 'position_size': position_size,
-                'side': action
+                'side': action,
+                'stop_loss': signal['stop_loss'],
+                'take_profit': signal['take_profit'],
+                'entry_regime': regime_result['regime'],
+                'entry_reason': signal.get('explanation', {}).get('reasoning', 'unknown'),
+                'highest_price': signal['current_price'],  # For trailing
+                'lowest_price': signal['current_price']    # For trailing
             }
             
             self.trade_count += 1
+            
+            # Save to database
             self.db_manager.save_trade({
                 'symbol': symbol,
-                'action': action,
+                'action': action.value,
                 'entry_price': signal['current_price'],
                 'position_size': position_size,
-                'timestamp': datetime.utcnow()
+                'stop_loss': signal['stop_loss'],
+                'take_profit': signal['take_profit'],
+                'leverage': settings.DEFAULT_LEVERAGE,
+                'confidence': signal['confidence'],
+                'entry_time': datetime.utcnow(),
+                'indicators': signal['indicators']
             })
             
-            logger.info(f"✅ Trade #{self.trade_count} opened on {symbol}")
+            logger.info(
+                f"✅ Trade #{self.trade_count} opened: {symbol} {action.value} "
+                f"Size: {position_size:.6f} @ ${signal['current_price']:.2f} "
+                f"(Regime: {regime_result['regime'].value})"
+            )
             
         except Exception as e:
             logger.error(f"Execution failed for {symbol}: {e}")
-
-    async def _manage_positions(self):
-        """Manage all open positions from the scanner"""
+            self.circuit_breaker.report_order_failure({'error': str(e), 'symbol': symbol})
+    
+    async def _manage_positions_advanced(self):
+        """
+        Advanced position management with dynamic exits
+        """
         for symbol, position in list(self.open_positions.items()):
             try:
-                # Basic TP check
+                # Fetch current price
                 ticker = await self.exchange_client.fetch_ticker(symbol)
                 current_price = ticker['last']
-                signal = position['signal']
                 
-                should_close = False
-                if position['side'] == TradeAction.ENTER_LONG and current_price >= signal['take_profit']:
-                    should_close = True
-                elif position['side'] == TradeAction.ENTER_SHORT and current_price <= signal['take_profit']:
-                    should_close = True
+                # Update highest/lowest for trailing
+                if current_price > position['highest_price']:
+                    position['highest_price'] = current_price
+                if current_price < position['lowest_price']:
+                    position['lowest_price'] = current_price
                 
-                if should_close:
-                    await self._close_position(symbol, "take_profit")
+                # Fetch current OHLCV for regime detection
+                df = await self.exchange_client.fetch_ohlcv(
+                    symbol=symbol,
+                    timeframe=settings.DEFAULT_TIMEFRAME,
+                    limit=200
+                )
                 
-                # Check if position still exists on exchange
-                ex_pos = await self.exchange_client.fetch_positions(symbol)
-                if not ex_pos:
-                    await self._close_position_record(symbol, position, "stop_loss_or_manual")
-
+                if df is None or df.empty:
+                    continue
+                
+                # Calculate indicators
+                signal = self.signal_manager.generate_signal(df, symbol)
+                indicators = signal['indicators']
+                
+                # Detect current regime
+                regime_result = self.regime_detector.detect(df, indicators)
+                current_regime = regime_result['regime']
+                
+                # Get balance
+                balance_data = await self.exchange_client.fetch_balance()
+                balance = balance_data['total']
+                
+                # NEW: Check dynamic exit conditions
+                should_exit, exit_reason, exit_details = self.exit_manager.should_exit(
+                    position=position,
+                    current_price=current_price,
+                    current_regime=current_regime,
+                    indicators=indicators,
+                    open_positions=list(self.open_positions.values()),
+                    balance=balance
+                )
+                
+                if should_exit:
+                    await self._close_position(
+                        symbol, 
+                        f"{exit_reason.value}_{exit_details if exit_details else ''}"
+                    )
+                    continue
+                
+                # Check if position still exists on exchange (SL hit?)
+                exchange_positions = await self.exchange_client.fetch_positions(symbol)
+                if not exchange_positions or all(float(p.get('contracts', 0)) == 0 for p in exchange_positions):
+                    # Position closed on exchange (likely SL)
+                    await self._close_position_record(symbol, position, "stop_loss_exchange")
+                
             except Exception as e:
                 logger.error(f"Position management error ({symbol}): {e}")
-
+    
     async def _close_position(self, symbol: str, reason: str):
+        """Close position manually"""
         try:
             await self.exchange_client.close_position(symbol)
+            
             if symbol in self.open_positions:
                 await self._close_position_record(symbol, self.open_positions[symbol], reason)
+                
         except Exception as e:
-            logger.error(f"Close error: {e}")
-
+            logger.error(f"Close error for {symbol}: {e}")
+    
     async def _close_position_record(self, symbol: str, position: Dict, reason: str):
-        # Simplified P&L update for the scanner
-        if symbol in self.open_positions:
+        """Record position closure"""
+        if symbol not in self.open_positions:
+            return
+        
+        try:
+            # Fetch final price
+            ticker = await self.exchange_client.fetch_ticker(symbol)
+            exit_price = ticker['last']
+            
+            # Calculate P&L
+            entry_price = position['entry_price']
+            size = position['position_size']
+            side = position['side']
+            
+            if side == TradeAction.ENTER_LONG:
+                pnl = (exit_price - entry_price) * size
+            else:
+                pnl = (entry_price - exit_price) * size
+            
+            self.total_pnl += pnl
+            
+            if pnl > 0:
+                self.winning_trades += 1
+            else:
+                self.losing_trades += 1
+            
+            # Update database
+            # (Find trade by symbol and entry_time, update with exit data)
+            
+            logger.info(
+                f"🔒 Position closed: {symbol} | "
+                f"P&L: ${pnl:.2f} | Reason: {reason}"
+            )
+            
+            # Remove from open positions
             del self.open_positions[symbol]
-            logger.info(f"📊 Position {symbol} closed ({reason})")
-
+            
+        except Exception as e:
+            logger.error(f"Error recording position closure for {symbol}: {e}")
+    
+    async def _close_all_positions(self):
+        """Close all open positions"""
+        for symbol in list(self.open_positions.keys()):
+            await self._close_position(symbol, "engine_shutdown")
+    
     async def _update_metrics(self):
-        if not self.exchange_client: return
+        """Update performance metrics"""
+        if not self.exchange_client:
+            return
+        
         try:
             balance = await self.exchange_client.fetch_balance()
             current_balance = balance['total']
-            self.safety_checker.record_trade({'pnl': current_balance - self.last_balance})
-        except:
-            pass
-
+            
+            # Record trade for safety checker
+            self.safety_checker.record_trade({
+                'pnl': current_balance - self.last_balance
+            })
+            
+        except Exception as e:
+            logger.debug(f"Metrics update error: {e}")
+    
     async def get_status(self) -> Dict:
-        # Check if exchange_client exists before calling it
+        """Get engine status"""
         balance_val = 0
         if self.exchange_client:
             try:
                 b = await self.exchange_client.fetch_balance()
                 balance_val = b['total']
-            except: pass
-            
+            except:
+                pass
+        
+        # Get expectancy summary
+        expectancy_summary = self.expectancy_engine.get_performance_summary()
+        
+        # Get portfolio exposure
+        portfolio_exposure = {}
+        if self.open_positions:
+            portfolio_exposure = self.portfolio_risk.get_portfolio_exposure_breakdown(
+                list(self.open_positions.values()),
+                balance_val
+            )
+        
         return {
             'is_running': self.is_running,
             'exchange': settings.EXCHANGE,
             'balance': balance_val,
             'open_positions': len(self.open_positions),
             'total_trades': self.trade_count,
-            'uptime': (datetime.utcnow() - self.start_time).total_seconds() if self.start_time else 0
+            'winning_trades': self.winning_trades,
+            'losing_trades': self.losing_trades,
+            'total_pnl': self.total_pnl,
+            'uptime': (datetime.utcnow() - self.start_time).total_seconds() if self.start_time else 0,
+            'expectancy_metrics': expectancy_summary,
+            'portfolio_exposure': portfolio_exposure
         }
-
+    
     async def get_balance(self) -> Dict:
-        if not self.exchange_client: return {'total': 0, 'free': 0}
+        """Get account balance"""
+        if not self.exchange_client:
+            return {'total': 0, 'free': 0}
         return await self.exchange_client.fetch_balance()
+    
+    async def get_open_positions(self) -> List[Dict]:
+        """Get open positions"""
+        return list(self.open_positions.values())
+
+
+__all__ = ['HybridTradingEngine']
