@@ -4,139 +4,95 @@ import pandas as pd
 from datetime import datetime
 from .base_client import BaseExchangeClient
 from utils.logger import setup_logger
+import os
 
 logger = setup_logger(__name__)
 
 class WEEXClient(BaseExchangeClient):
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True, base_url: Optional[str] = None):
+        # Inisialisasi dasar
         super().__init__(api_key, api_secret, testnet)
         self.exchange_name = "WEEX"
+        # Ambil passphrase dari .env (Field ini wajib untuk WEEX API V2)
+        self.passphrase = os.getenv('WEEX_PASSPHRASE')
         self.base_url = base_url
         self.exchange = None
         
     async def initialize(self):
-        """Initialize WEEX exchange connection - ANTI-PUFF & MOCK VERSION"""
+        """Inisialisasi koneksi asli ke server WEEX menggunakan API Key & Passphrase"""
         try:
             config = {
-                'apiKey': self.api_key or 'dummy_key',
-                'secret': self.api_secret or 'dummy_secret',
+                'apiKey': self.api_key,
+                'secret': self.api_secret,
+                'password': self.passphrase, # Passphrase dimasukkan ke field 'password' di CCXT
                 'enableRateLimit': True,
-                'options': {'defaultType': 'swap'}
+                'options': {'defaultType': 'swap'} # Untuk trading futures/perp sesuai guide
             }
-            self.exchange = ccxt.woo(config)
             
-            # --- BYPASS 'PUFF' ERROR & API VALIDATION ---
-            self.exchange.options['fetchCurrencies'] = False
+            # Menggunakan driver bitget karena struktur API WEEX kompatibel
+            self.exchange = ccxt.bitget(config)
             
-            # Injeksi market data agar sistem tidak panggil load_markets() yang rusak
-            self.exchange.markets = {
-                'BTC/USDT:USDT': {
-                    'id': 'PERP_BTC_USDT', 
-                    'symbol': 'BTC/USDT:USDT', 
-                    'base': 'BTC', 
-                    'quote': 'USDT', 
-                    'type': 'swap', 
-                    'spot': False, 
-                    'swap': True, 
-                    'linear': True
-                }
-            }
-            self.exchange.markets_by_id = {'PERP_BTC_USDT': self.exchange.markets['BTC/USDT:USDT']}
-            self.exchange.markets_loading = False 
-            
-            # Mock fungsi pemicu error agar tidak meledak saat API Key kosong
-            async def mock_call(*args, **kwargs): return {}
-            self.exchange.fetch_currencies = mock_call
-            self.exchange.load_markets = mock_call 
-            
+            # Paksa gunakan sandbox jika mode testnet aktif
             if self.testnet:
                 self.exchange.set_sandbox_mode(True)
             
-            logger.info(f"🚀 WEEX client BYPASS SUCCESS (testnet={self.testnet})")
+            # Validasi koneksi dengan meload market asli
+            await self.exchange.load_markets()
+            
+            logger.info(f"✅ WEEX Client Initialized (Testnet={self.testnet})")
         except Exception as e:
-            logger.error(f"Failed to initialize WEEX: {e}")
-            if self.exchange: await self.exchange.close()
+            logger.error(f"❌ WEEX Initialization Failed: {e}")
             raise
 
     async def fetch_balance(self) -> Dict[str, Any]:
-        """Memberikan saldo simulasi jika API Key tidak valid agar Dashboard muncul"""
+        """Mengambil saldo ASLI (Testing 1000 USDT) dari akun WEEX"""
         try:
-            if not self.api_key or self.api_key == 'your_api_key':
-                return {
-                    'total': 10000.0,
-                    'free': 10000.0,
-                    'used': 0.0,
-                    'currency': 'USDT',
-                    'timestamp': datetime.utcnow().isoformat()
-                }
             balance = await self.exchange.fetch_balance()
             usdt = balance.get('USDT', {})
+            
             return {
-                'total': usdt.get('total', 0),
-                'free': usdt.get('free', 0),
-                'used': usdt.get('used', 0),
+                'total': float(usdt.get('total', 0.0)),
+                'free': float(usdt.get('free', 0.0)),
+                'used': float(usdt.get('used', 0.0)),
                 'currency': 'USDT',
                 'timestamp': datetime.utcnow().isoformat()
             }
-        except Exception:
-            # Fallback ke saldo simulasi jika error API Key
-            return {'total': 10000.0, 'free': 10000.0, 'used': 0.0, 'currency': 'USDT'}
-
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 200) -> pd.DataFrame:
-        try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            return self.standardize_ohlcv(ohlcv)
-        except Exception:
-            # Jika gagal (karena API), buat data kosong agar grafik tidak crash
-            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"⚠️ Gagal mengambil saldo asli WEEX: {e}")
+            raise e
 
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Mengambil harga pasar real-time untuk simulasi dan sinyal"""
         try:
+            # Sesuaikan simbol jika perlu (misal: cmt_btcusdt sesuai guide)
             ticker = await self.exchange.fetch_ticker(symbol)
-            return {'symbol': symbol, 'last': ticker.get('last'), 'timestamp': ticker.get('timestamp')}
-        except Exception:
+            return {
+                'symbol': symbol, 
+                'last': float(ticker.get('last', 0.0)), 
+                'timestamp': ticker.get('timestamp')
+            }
+        except Exception as e:
+            logger.error(f"Error fetching ticker for {symbol}: {e}")
             return {'symbol': symbol, 'last': 0.0, 'timestamp': None}
 
     async def create_market_order(self, symbol: str, side: str, amount: float, params: Optional[Dict] = None) -> Dict[str, Any]:
-        return await self.exchange.create_order(symbol, 'market', side, amount, params=params or {})
-
-    async def create_limit_order(self, symbol: str, side: str, amount: float, price: float, params: Optional[Dict] = None) -> Dict[str, Any]:
-        return await self.exchange.create_order(symbol, 'limit', side, amount, price, params or {})
-
-    async def create_stop_loss_order(self, symbol: str, side: str, amount: float, stop_price: float, params: Optional[Dict] = None) -> Dict[str, Any]:
-        p = params or {}
-        p['stopPrice'] = stop_price
-        return await self.exchange.create_order(symbol, 'stop_market', side, amount, params=p)
-
-    async def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        return await self.exchange.cancel_order(order_id, symbol)
-
-    async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
+        """Eksekusi Order Pasar untuk memenuhi syarat trading 10 USDT"""
         try:
-            return await self.exchange.fetch_open_orders(symbol)
-        except: return []
+            return await self.exchange.create_order(symbol, 'market', side, amount, params=params or {})
+        except Exception as e:
+            logger.error(f"❌ Gagal membuat order di WEEX: {e}")
+            raise e
 
     async def fetch_positions(self, symbol: Optional[str] = None) -> List[Dict]:
+        """Cek posisi yang sedang terbuka di akun WEEX"""
         try:
-            pos = await self.exchange.fetch_positions(symbol)
-            return [p for p in pos if float(p.get('contracts', 0)) > 0]
-        except: return []
-
-    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
-        try:
-            return await self.exchange.set_leverage(leverage, symbol)
-        except: return {"status": "mock_success"}
-
-    async def fetch_my_trades(self, symbol: Optional[str] = None, limit: int = 50) -> List[Dict]:
-        try:
-            return await self.exchange.fetch_my_trades(symbol, limit=limit)
-        except: return []
-
-    async def close_position(self, symbol: str, side: Optional[str] = None) -> Dict[str, Any]:
-        pos = await self.fetch_positions(symbol)
-        if not pos: return {"status": "no_position"}
-        side_close = 'sell' if pos[0].get('side') == 'long' else 'buy'
-        return await self.create_market_order(symbol, side_close, abs(float(pos[0].get('contracts', 0))), {'reduceOnly': True})
+            positions = await self.exchange.fetch_positions(symbol)
+            return [p for p in positions if float(p.get('contracts', 0)) > 0]
+        except Exception as e:
+            logger.error(f"Error fetching positions: {e}")
+            return []
 
     async def close(self):
-        if self.exchange: await self.exchange.close()
+        """Menutup koneksi API"""
+        if self.exchange:
+            await self.exchange.close()
