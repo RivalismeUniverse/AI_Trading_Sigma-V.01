@@ -1,54 +1,46 @@
-# AI Trading SIGMA - Backend Dependencies
+# AI Trading SIGMA - Backend Dependencies (Python 3.12 Optimized)
 
 # Core Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
-pydantic==2.5.0
-pydantic-settings==2.1.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+python-multipart>=0.0.9
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
 
-# AWS Bedrock / AI
-boto3==1.34.10
-botocore==1.34.10
-anthropic==0.8.1
+# AI Layer (Switched from AWS to Gemini)
+google-generativeai>=0.4.1
 
 # Exchange Integration
-ccxt==4.1.80
-python-binance==1.0.19
+ccxt>=4.2.0
+python-binance>=1.0.19
 
-# Data Science & Technical Analysis
-numpy==1.24.3
-pandas==2.0.3
-ta==0.11.0
-scipy==1.11.4
+# Data Science & Technical Analysis (Fixes for Python 3.12)
+numpy>=1.26.0
+pandas>=2.2.0
+ta>=0.11.0
+scipy>=1.12.0
 
 # Database
-sqlalchemy==2.0.23
-alembic==1.12.1
-aiosqlite==0.19.0
+sqlalchemy>=2.0.27
+alembic>=1.13.0
+aiosqlite>=0.20.0
 
 # Async & Background Tasks
-asyncio==3.4.3
-aiohttp==3.9.1
-websockets==12.0
+aiohttp>=3.9.0
+websockets>=12.0
 
 # Utilities
-python-dotenv==1.0.0
-python-json-logger==2.0.7
-pytz==2023.3
-arrow==1.3.0
+python-dotenv>=1.0.1
+python-json-logger>=2.0.7
+pytz>=2024.1
+arrow>=1.3.0
 
 # Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
-httpx==0.25.2
-
-# Code Quality
-black==23.12.0
-flake8==6.1.0
-mypy==1.7.1
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.27.0
 
 # Monitoring & Logging
-prometheus-client==0.19.0
-loguru==0.7.2
+prometheus-client>=0.20.0
+loguru>=0.7.2
