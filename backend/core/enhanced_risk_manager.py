@@ -185,7 +185,7 @@ class EnhancedRiskManager:
         if confidence and confidence > 0.7:
             exploration_risk = base_exploration_risk * 1.5  # Max 0.75%
         else:
-        exploration_risk = base_exploration_risk
+            exploration_risk = base_exploration_risk
         
         risk_amount = balance * exploration_risk
         
