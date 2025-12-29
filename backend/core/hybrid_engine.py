@@ -26,6 +26,9 @@ from database.db_manager import DatabaseManager
 from utils.logger import setup_logger, compliance_logger
 from utils.constants import TradeAction
 
+# LANGKAH 1: Tambahkan import AI Logger
+from ai.ai_logger import AILogger
+
 logger = setup_logger(__name__)
 
 
@@ -70,6 +73,10 @@ class HybridTradingEngine:
         self.safety_checker = get_safety_checker()
         self.circuit_breaker = get_circuit_breaker()
         
+        # LANGKAH 2: Inisialisasi AI Logger di __init__
+        # Inisialisasi pelapor AI
+        self.ai_logger = None 
+        
         # State
         self.active_strategy = None
         self.open_positions = {}
@@ -109,6 +116,10 @@ class HybridTradingEngine:
                 raise ValueError(f"Unknown exchange: {exchange_config['type']}")
             
             await self.exchange_client.initialize()
+            
+            # LANGKAH 2: Inisialisasi AI Logger setelah exchange client siap
+            self.ai_logger = AILogger(self.exchange_client)
+            logger.info("🚀 AI Logger siap mengirim laporan ke WEEX")
             
             # Set leverage for allowed symbols
             for symbol in settings.ALLOWED_SYMBOLS:
@@ -371,6 +382,17 @@ class HybridTradingEngine:
                 amount=position_size,
                 params={'leverage': settings.DEFAULT_LEVERAGE}
             )
+            
+            # LANGKAH 3: Suntikan AI Log untuk WEEX
+
+        if self.ai_logger:
+            await self.ai_logger.report_decision(
+                indicators=signal['indicators'],
+                decision=action.value,  # "ENTER_LONG" / "ENTER_SHORT"
+                order_id=order.get('id') or order.get('orderId'),
+                confidence=signal.get('confidence')  # Kirim confidence
+          )
+            # ----------------------------------
             
             # Create stop loss
             stop_side = 'sell' if action == TradeAction.ENTER_LONG else 'buy'
