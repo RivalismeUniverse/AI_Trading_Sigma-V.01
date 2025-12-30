@@ -119,7 +119,7 @@ class HybridTradingEngine:
             # CRITICAL: Initialize REAL AI components
             logger.info("🤖 Initializing Gemini 3 Flash client...")
             self.bedrock_client = BedrockClient()
-            await self.badrock_client.initialize()
+            await self.bedrock_client.initialize()
             
             logger.info("📝 Initializing ETHICAL AI Logger...")
             self.ai_logger = AILogger(
