@@ -1,23 +1,33 @@
 /**
  * API Service
  * Centralized API calls to backend
+ * Fixed: Dynamic URL for Railway & Vercel
  */
 
 import axios from 'axios';
-const API_URL = 'https://orange-space-lamp-qvq7r9w4j5qh6vw-8000.app.github.dev';
+
+// Pencarian URL Backend otomatis:
+// 1. Cek Environment Variable Vercel (REACT_APP_API_URL)
+// 2. Kalau gak ada, pakai link Railway kamu langsung
+const API_URL = process.env.REACT_APP_API_URL || 'https://aitradingsigma-v01-awsaccesskeyid.up.railway.app';
 
 const api = axios.create({
-  baseURL: `${API_URL}`,
-  headers: { 'Content-Type': 'application/json' }
+  baseURL: API_URL,
+  headers: { 
+    'Content-Type': 'application/json'
+  }
 });
-// Response interceptor for error handling
+
+// Response interceptor untuk menangani data dan error
 api.interceptors.response.use(
-  response => response.data,
-  error => {
+  (response) => response.data,
+  (error) => {
     console.error('API Error:', error.response?.data || error.message);
     return Promise.reject(error.response?.data || error.message);
   }
 );
+
+/** --- ENDPOINTS --- **/
 
 // Health & Status
 export const getHealth = () => api.get('/api/health');
