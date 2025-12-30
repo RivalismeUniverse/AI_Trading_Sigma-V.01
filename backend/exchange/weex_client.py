@@ -14,7 +14,6 @@ import os
 
 logger = setup_logger(__name__)
 
-
 class WEEXClient(BaseExchangeClient):
     def __init__(
         self,
@@ -49,12 +48,14 @@ class WEEXClient(BaseExchangeClient):
                 "options": {"defaultType": "swap"},
             }
 
-            # ✅ WEEX kompatibel dengan Bitget driver (LIVE)
+            # ✅ WEEX menggunakan engine yang kompatibel dengan Bitget
             self.exchange = ccxt.bitget(config)
 
             logger.info("🔴 WEEX LIVE environment (no testnet available)")
 
             await self.exchange.load_markets()
+            
+            # Memastikan koneksi awal berhasil dengan fetch balance
             await self.fetch_balance()
 
             self.session = aiohttp.ClientSession()
@@ -69,6 +70,7 @@ class WEEXClient(BaseExchangeClient):
             raise Exception("Exchange not initialized")
 
         balance = await self.exchange.fetch_balance()
+        # Mencari saldo USDT di akun Futures/Swap
         usdt = balance.get("USDT", {})
 
         return {
@@ -86,6 +88,19 @@ class WEEXClient(BaseExchangeClient):
             "last": float(ticker.get("last", 0)),
             "timestamp": ticker.get("timestamp"),
         }
+
+    # ✅ PERBAIKAN: Implementasi Abstract Methods yang diminta log error
+    async def create_limit_order(self, symbol: str, side: str, amount: float, price: float, params: Optional[Dict] = None):
+        return await self.exchange.create_order(symbol, 'limit', side, amount, price, params=params or {})
+
+    async def cancel_order(self, order_id: str, symbol: str):
+        return await self.exchange.cancel_order(order_id, symbol)
+
+    async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
+        return await self.exchange.fetch_open_orders(symbol)
+
+    async def fetch_my_trades(self, symbol: str, limit: int = 50) -> List[Dict]:
+        return await self.exchange.fetch_my_trades(symbol, limit=limit)
 
     async def create_market_order(
         self,
@@ -233,9 +248,6 @@ class WEEXClient(BaseExchangeClient):
             await self.exchange.close()
         if self.session:
             await self.session.close()
-
-    async def fetch_recent_trades(self, symbol: str, limit: int = 50) -> List[Dict]:
-        return await self.exchange.fetch_my_trades(symbol, limit=limit)
 
     async def get_order_status(self, order_id: str, symbol: str) -> Dict[str, Any]:
         return await self.exchange.fetch_order(order_id, symbol)
