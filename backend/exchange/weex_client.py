@@ -1,4 +1,4 @@
-# backend/exchange/weex_client.py - FIXED VERSION
+# backend/exchange/weex_client.py - LIVE ONLY (WEEX FIXED)
 import ccxt.async_support as ccxt
 import hashlib
 import hmac
@@ -16,11 +16,20 @@ logger = setup_logger(__name__)
 
 
 class WEEXClient(BaseExchangeClient):
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        testnet: bool = False,  # ⚠️ WEEX LIVE ONLY
+        base_url: Optional[str] = None,
+    ):
         super().__init__(api_key, api_secret, testnet)
         self.exchange_name = "WEEX"
         self.passphrase = os.getenv("WEEX_PASSPHRASE")
+
+        # ✅ SINGLE OFFICIAL BASE URL
         self.base_url = base_url or "https://api-contract.weex.com"
+
         self.exchange = None
         self.session = None
 
@@ -40,21 +49,19 @@ class WEEXClient(BaseExchangeClient):
                 "options": {"defaultType": "swap"},
             }
 
+            # ✅ WEEX kompatibel dengan Bitget driver (LIVE)
             self.exchange = ccxt.bitget(config)
 
-            if self.testnet:
-                self.exchange.set_sandbox_mode(True)
-                self.base_url = "https://api-demo.weex.com"
-                logger.info("🧪 Using WEEX Testnet")
+            logger.info("🔴 WEEX LIVE environment (no testnet available)")
 
             await self.exchange.load_markets()
             await self.fetch_balance()
 
             self.session = aiohttp.ClientSession()
-            logger.info("✅ WEEX Client Initialized")
+            logger.info("✅ WEEX Client Initialized (LIVE)")
 
         except Exception as e:
-            logger.error(f"WEEX initialization failed: {e}")
+            logger.error(f"❌ WEEX initialization failed: {e}")
             raise
 
     async def fetch_balance(self) -> Dict[str, Any]:
@@ -80,7 +87,13 @@ class WEEXClient(BaseExchangeClient):
             "timestamp": ticker.get("timestamp"),
         }
 
-    async def create_market_order(self, symbol: str, side: str, amount: float, params: Optional[Dict] = None):
+    async def create_market_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        params: Optional[Dict] = None,
+    ):
         return await self.exchange.create_order(
             symbol, "market", side, amount, params=params or {}
         )
@@ -222,8 +235,7 @@ class WEEXClient(BaseExchangeClient):
             await self.session.close()
 
     async def fetch_recent_trades(self, symbol: str, limit: int = 50) -> List[Dict]:
-        trades = await self.exchange.fetch_my_trades(symbol, limit=limit)
-        return trades
+        return await self.exchange.fetch_my_trades(symbol, limit=limit)
 
     async def get_order_status(self, order_id: str, symbol: str) -> Dict[str, Any]:
         return await self.exchange.fetch_order(order_id, symbol)
