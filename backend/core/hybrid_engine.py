@@ -27,7 +27,7 @@ from utils.logger import setup_logger, compliance_logger
 from utils.constants import TradeAction
 
 # CRITICAL: Import REAL AI components
-from ai.badrock_client import BadrockClient
+from ai.bedrock_client import BedrockClient
 from ai.ai_logger import AILogger
 
 logger = setup_logger(__name__)
