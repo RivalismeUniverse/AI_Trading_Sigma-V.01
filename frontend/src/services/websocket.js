@@ -1,9 +1,21 @@
 /**
  * WebSocket Service
  * Real-time updates from backend
+ * Fixed: Automatic protocol switching and dynamic URL
  */
 
-const WS_BASE_URL = process.env.REACT_APP_WS_URL || 'https://orange-space-lamp-qvq7r9w4j5qh6vw-8000.app.github.dev';
+// Fungsi untuk mengubah URL HTTPS Railway menjadi WSS secara otomatis
+const getWsUrl = () => {
+  const envUrl = process.env.REACT_APP_WS_URL || process.env.REACT_APP_API_URL || 'https://aitradingsigma-v01-awsaccesskeyid.up.railway.app';
+  
+  // Jika URL mengandung http/https, ganti jadi ws/wss
+  if (envUrl.startsWith('http')) {
+    return envUrl.replace(/^http/, 'ws');
+  }
+  return envUrl;
+};
+
+const WS_BASE_URL = getWsUrl();
 
 class WebSocketService {
   constructor() {
@@ -22,7 +34,11 @@ class WebSocketService {
     }
 
     try {
-      this.ws = new WebSocket(`${WS_BASE_URL}/ws/live-feed`);
+      // Menambahkan /ws/live-feed sesuai endpoint backend kamu
+      const fullWsUrl = `${WS_BASE_URL}/ws/live-feed`;
+      console.log('Connecting to WebSocket:', fullWsUrl);
+      
+      this.ws = new WebSocket(fullWsUrl);
       
       this.ws.onopen = () => {
         console.log('✅ WebSocket connected');
@@ -60,11 +76,7 @@ class WebSocketService {
 
   handleMessage(data) {
     const { type, data: payload } = data;
-    
-    // Notify all listeners for this event type
     this.notifyListeners(type, payload);
-    
-    // Also notify 'all' listeners
     this.notifyListeners('all', data);
   }
 
@@ -84,8 +96,6 @@ class WebSocketService {
       this.listeners.set(eventType, []);
     }
     this.listeners.get(eventType).push(callback);
-    
-    // Return unsubscribe function
     return () => this.off(eventType, callback);
   }
 
@@ -132,7 +142,5 @@ class WebSocketService {
   }
 }
 
-// Singleton instance
 const websocketService = new WebSocketService();
-
 export default websocketService;
