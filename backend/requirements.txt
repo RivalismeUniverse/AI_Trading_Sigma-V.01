@@ -7,14 +7,15 @@ python-multipart>=0.0.9
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
 
-# AI Layer (Switched from AWS to Gemini)
-google-generativeai>=0.4.1
+# AI Layer (MIGRASI KE SDK BARU)
+# Mengganti google-generativeai dengan google-genai sesuai warning terminal
+google-genai>=0.1.0 
 
 # Exchange Integration
 ccxt>=4.2.0
 python-binance>=1.0.19
 
-# Data Science & Technical Analysis (Fixes for Python 3.12)
+# Data Science & Technical Analysis
 numpy>=1.26.0
 pandas>=2.2.0
 ta>=0.11.0
