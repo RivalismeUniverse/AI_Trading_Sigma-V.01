@@ -3,7 +3,6 @@ Configuration Management for AI Trading SIGMA
 Handles all environment variables and application settings
 Optimized for Google Gemini Integration
 """
-
 import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +34,7 @@ class Settings(BaseSettings):
     # WEEX Exchange
     WEEX_API_KEY: str = Field(default="")
     WEEX_API_SECRET: str = Field(default="")
+    WEEX_PASSPHRASE: str = Field(default="")  # ✅ ADDED
     WEEX_TESTNET: bool = Field(default=True)
     WEEX_BASE_URL: Optional[str] = Field(default=None)
     
@@ -59,11 +59,9 @@ class Settings(BaseSettings):
     RSI_PERIOD: int = Field(default=14)
     RSI_OVERSOLD: float = Field(default=30.0)
     RSI_OVERBOUGHT: float = Field(default=70.0)
-    
     MACD_FAST: int = Field(default=12)
     MACD_SLOW: int = Field(default=26)
     MACD_SIGNAL: int = Field(default=9)
-    
     BB_PERIOD: int = Field(default=20)
     BB_STD: float = Field(default=2.0)
     
@@ -111,12 +109,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000"
     ])
     
-    # MODIFIKASI DISINI: Tambahkan extra="ignore" agar tidak error jika ada variabel baru di .env
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore" 
+        extra="ignore"
     )
 
 
@@ -129,19 +126,23 @@ def validate_exchange_config() -> bool:
     """Validate exchange configuration"""
     if settings.EXCHANGE == "weex":
         if not settings.WEEX_API_KEY or not settings.WEEX_API_SECRET:
-            # Kita buat jadi warning saja agar bot tetap jalan meski API exchange belum ada
             print("⚠️ WARNING: WEEX API credentials not configured")
+            return True
+        if not settings.WEEX_PASSPHRASE:  # ✅ ADDED
+            print("⚠️ WARNING: WEEX_PASSPHRASE not configured")
+            return True
     return True
 
 
 def validate_aws_config() -> bool:
     """Validate AI configuration (Gemini or AWS)"""
-    # Jika Gemini API Key ada, maka validasi AI dianggap berhasil
     if settings.GEMINI_API_KEY:
         return True
-    # Jika tidak ada Gemini, baru cek AWS
+    
     if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
         print("⚠️ WARNING: AI credentials (Gemini/AWS) not configured")
+        return True
+    
     return True
 
 
@@ -152,6 +153,7 @@ def get_exchange_config() -> dict:
             "type": "weex",
             "api_key": settings.WEEX_API_KEY,
             "api_secret": settings.WEEX_API_SECRET,
+            "passphrase": settings.WEEX_PASSPHRASE,  # ✅ ADDED
             "testnet": settings.WEEX_TESTNET,
             "base_url": settings.WEEX_BASE_URL
         }
@@ -165,4 +167,4 @@ __all__ = [
     'validate_exchange_config',
     'validate_aws_config',
     'get_exchange_config'
-    ]
+]
