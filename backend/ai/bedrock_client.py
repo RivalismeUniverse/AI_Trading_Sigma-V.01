@@ -1,13 +1,16 @@
 """
 Google Gemini 3 Client - AI Trading SIGMA Integration
-Optimized for Gemini 3 Flash Preview (Experimental)
+Updated for google-genai SDK (Standard 2026)
+Optimized for Gemini 3 Flash
 """
 
 import os
 import json
 import logging
+import asyncio
 from typing import Dict, List, Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -20,6 +23,7 @@ class GeminiClient:
     """
     Google Gemini client with same interface as BedrockClient.
     Provides advanced trading strategy generation and market analysis.
+    Using the modern google-genai SDK.
     """
     
     def __init__(self, api_key: Optional[str] = None):
@@ -32,28 +36,26 @@ class GeminiClient:
                 "Get one at: https://aistudio.google.com/app/apikey"
             )
         
-        # Configure Gemini
-        genai.configure(api_key=self.api_key)
+        # Inisialisasi Client baru (google-genai)
+        self.client = genai.Client(api_key=self.api_key)
+        self.model_id = 'gemini-3-flash-preview'
         
-        # Menggunakan Gemini 3 Flash Preview sesuai ketersediaan di akun kamu
-        self.model = genai.GenerativeModel(
-            model_name='gemini-3-flash-preview',
-            generation_config={
-                'temperature': 0.7,
-                'top_p': 0.95,
-                'top_k': 40,
-                'max_output_tokens': 8192,
-            },
+        # Konfigurasi Generasi
+        self.config = types.GenerateContentConfig(
+            temperature=0.7,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=8192,
             safety_settings=[
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")
             ]
         )
         
         self.system_prompt = self._load_system_prompt()
-        logger.info("✓ Gemini 3 Flash Client initialized successfully")
+        logger.info("✓ Gemini 3 Flash Client (New SDK) initialized successfully")
     
     def _load_system_prompt(self) -> str:
         """Load system prompt for trading assistant"""
@@ -76,21 +78,29 @@ Key constraints:
         user_message: str, 
         conversation_history: Optional[List[Dict]] = None
     ) -> str:
-        """Chat with Gemini 3"""
+        """Chat with Gemini 3 using async wrapper for the new SDK"""
         try:
-            messages = []
+            # Format history untuk SDK baru
+            history = []
             if conversation_history:
                 for msg in conversation_history:
                     role = 'user' if msg.get('role') == 'user' else 'model'
-                    content = msg.get('content', '')
-                    messages.append({'role': role, 'parts': [content]})
+                    history.append(types.Content(role=role, parts=[types.Part(text=msg.get('content', ''))]))
             
-            # Start chat with history
-            chat_session = self.model.start_chat(history=messages)
-            
-            # Send current message with system context
+            # Tambahkan system prompt ke pesan pertama jika history kosong
             full_prompt = f"{self.system_prompt}\n\nUser: {user_message}"
-            response = chat_session.send_message(full_prompt)
+            
+            # SDK baru menggunakan call synchronous atau async client terpisah, 
+            # di sini kita gunakan run_in_executor untuk menjaga kompatibilitas async
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                lambda: self.client.models.generate_content(
+                    model=self.model_id,
+                    contents=full_prompt,
+                    config=self.config
+                )
+            )
             
             result = response.text.strip()
             logger.info(f"Gemini 3 Chat: {len(user_message)} chars in, {len(result)} chars out")
@@ -132,7 +142,16 @@ Generate a complete trading strategy in JSON format with these fields:
 }}
 Return ONLY valid JSON."""
 
-            response = self.model.generate_content(strategy_prompt)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.models.generate_content(
+                    model=self.model_id,
+                    contents=strategy_prompt,
+                    config=self.config
+                )
+            )
+            
             result = response.text.strip()
             
             # Clean JSON from markdown blocks
@@ -165,7 +184,10 @@ Return ONLY valid JSON."""
     def test_connection(self) -> bool:
         """Test API connection"""
         try:
-            response = self.model.generate_content("OK")
+            response = self.client.models.generate_content(
+                model=self.model_id, 
+                contents="ping"
+            )
             return len(response.text) > 0
         except:
             return False
@@ -174,4 +196,3 @@ Return ONLY valid JSON."""
 BedrockClient = GeminiClient
 
 __all__ = ['GeminiClient', 'BedrockClient']
-
