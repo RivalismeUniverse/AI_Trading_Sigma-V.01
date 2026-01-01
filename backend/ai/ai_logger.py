@@ -238,13 +238,13 @@ Respond now:"""
             if len(explanation) > 1000:
                 explanation = explanation[:997] + "..."
             
-            # ✅ TRY Upload to WEEX
+            # ✅ TRY Upload to WEEX (Fixed syntax here)
             result = await self.weex.upload_ai_log(
                 orderId=order_id,
                 stage="Signal Validation",
                 model=self.model_name,
                 input=input_data,
-                output=output_data
+                output=output_data,
                 explanation=explanation
             )
             
@@ -349,8 +349,7 @@ Respond now:"""
                 model=self.model_name,
                 input=input_data,
                 output=output_data,
-           
-            explanation=explanation
+                explanation=explanation
             )
             
             if result.get('code') == '00000':
