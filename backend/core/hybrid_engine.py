@@ -99,9 +99,11 @@ class HybridTradingEngine:
             exchange_config = get_exchange_config()
             
             if exchange_config['type'] == 'weex':
+                # ✅ FIXED: Pass passphrase to WEEXClient
                 self.exchange_client = WEEXClient(
                     api_key=exchange_config['api_key'],
                     api_secret=exchange_config['api_secret'],
+                    passphrase=exchange_config.get('passphrase'),  # ✅ ADDED
                     testnet=exchange_config['testnet'],
                     base_url=exchange_config.get('base_url')
                 )
