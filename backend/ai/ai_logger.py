@@ -1,13 +1,13 @@
 """
 AI Logger - ETHICAL VERSION using existing BedrockClient (Gemini 3 Flash)
-Simplified to work with your current structure - minimal changes!
+With LOCAL BACKUP FALLBACK for reliability
 """
-
 import re
+import os
+import json
 from typing import Dict, Any, Optional
 from datetime import datetime
-
-from ai.bedrock_client import BedrockClient  # Your existing Gemini client
+from ai.bedrock_client import BedrockClient
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -16,15 +16,12 @@ logger = setup_logger(__name__)
 class AILogger:
     """
     Ethical AI Logger using REAL Gemini 3 Flash validation
-    
-    Works with your existing bedrock_client.py structure
-    No need to change core engine code!
+    With automatic local backup if WEEX upload fails
     """
     
     def __init__(self, weex_client):
         """
         Initialize with existing clients
-        
         Args:
             weex_client: WEEX exchange client for upload_ai_log
         """
@@ -34,12 +31,16 @@ class AILogger:
         try:
             self.gemini = BedrockClient()
             self.model_name = "Gemini 3 Flash Preview"
-            logger.info("✅ AI Logger initialized with Gemini 3 Flash")
+            logger.info("🔥 AI Logger initialized with Gemini 3 Flash")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.gemini = None
             self.model_name = "Gemini 3 Flash (unavailable)"
-    
+        
+        # ✅ Setup backup directory
+        self.backup_dir = 'logs/ai_backup'
+        os.makedirs(self.backup_dir, exist_ok=True)
+
     async def validate_signal_with_real_ai(
         self,
         signal: Dict,
@@ -47,9 +48,6 @@ class AILogger:
     ) -> Dict:
         """
         REAL AI validation BEFORE trade execution
-        
-        This is the ETHICAL way - AI actually decides
-        
         Returns:
             {
                 'decision': 'APPROVE' | 'REJECT',
@@ -72,7 +70,7 @@ class AILogger:
             # Build validation prompt
             prompt = self._build_validation_prompt(signal, indicators)
             
-            logger.info(f"🤖 Calling Gemini 3 Flash for {signal['symbol']} validation...")
+            logger.info(f"🔥 Calling Gemini 3 Flash for {signal['symbol']} validation...")
             
             # Use your existing BedrockClient's chat method
             ai_response = await self.gemini.chat(
@@ -85,7 +83,7 @@ class AILogger:
             # Parse AI response
             parsed = self._parse_ai_response(ai_response)
             
-            # Log to WEEX with REAL data
+            # Log to WEEX with REAL data (with fallback)
             await self._log_to_weex(
                 signal=signal,
                 indicators=indicators,
@@ -95,7 +93,7 @@ class AILogger:
             )
             
             logger.info(
-                f"📊 AI Validation: {parsed['decision']} "
+                f"✅ AI Validation: {parsed['decision']} "
                 f"(confidence: {parsed['confidence']:.2f})"
             )
             
@@ -110,7 +108,7 @@ class AILogger:
                 'reasoning': f"AI error: {str(e)}",
                 'raw_response': ''
             }
-    
+
     def _build_validation_prompt(self, signal: Dict, indicators: Dict) -> str:
         """Build structured prompt for Gemini"""
         action = signal['action'].value if hasattr(signal['action'], 'value') else str(signal['action'])
@@ -147,11 +145,9 @@ Consider:
 Respond now:"""
         
         return prompt
-    
+
     def _parse_ai_response(self, response: str) -> Dict:
-        """
-        Parse Gemini response into structured format
-        """
+        """Parse Gemini response into structured format"""
         try:
             # Extract DECISION
             if 'APPROVE' in response.upper() and 'REJECT' not in response.upper():
@@ -188,7 +184,7 @@ Respond now:"""
                 'reasoning': f"Parse error: {str(e)[:100]}",
                 'raw_response': response
             }
-    
+
     async def _log_to_weex(
         self,
         signal: Dict,
@@ -199,6 +195,7 @@ Respond now:"""
     ):
         """
         Log ACTUAL AI decision to WEEX
+        ✅ WITH AUTOMATIC LOCAL BACKUP FALLBACK
         """
         try:
             action = signal['action'].value if hasattr(signal['action'], 'value') else str(signal['action'])
@@ -241,27 +238,84 @@ Respond now:"""
             if len(explanation) > 1000:
                 explanation = explanation[:997] + "..."
             
-            # Upload to WEEX
+            # ✅ TRY Upload to WEEX
             result = await self.weex.upload_ai_log(
                 orderId=order_id,
                 stage="Signal Validation",
                 model=self.model_name,
                 input=input_data,
-                output=output_data,
+                output=output_data
                 explanation=explanation
             )
             
             if result.get('code') == '00000':
                 logger.info("✅ AI Log uploaded to WEEX")
             else:
-                logger.warning(f"⚠️ AI Log response: {result}")
+                # Upload failed, trigger fallback
+                raise Exception(f"WEEX upload failed: {result}")
                 
         except Exception as e:
-            logger.error(f"Failed to log to WEEX: {e}")
-    
+            logger.warning(f"⚠️ WEEX AI Log upload failed: {e}")
+            
+            # ✅ FALLBACK: Save to local backup
+            await self._save_ai_log_locally(
+                signal=signal,
+                indicators=indicators,
+                ai_response=ai_response,
+                order_id=order_id
+            )
+
+    async def _save_ai_log_locally(
+        self,
+        signal: Dict,
+        indicators: Dict,
+        ai_response: Dict,
+        order_id: Optional[str]
+    ):
+        """
+        ✅ NEW: Save AI log locally as backup when WEEX upload fails
+        """
+        try:
+            action = signal['action'].value if hasattr(signal['action'], 'value') else str(signal['action'])
+            
+            log_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "orderId": order_id,
+                "stage": "Signal Validation",
+                "model": self.model_name,
+                "symbol": signal['symbol'],
+                "action": action,
+                "input": {
+                    "v1_confidence": float(signal.get('confidence', 0.0)),
+                    "v2_confirmation": float(signal.get('validation', {}).get('confirmation_score', 0.0)),
+                    "RSI": float(indicators.get('rsi', 0.0)),
+                    "MACD": float(indicators.get('macd_histogram', 0.0)),
+                    "MC_PROB": float(indicators.get('mc_probability', 0.0)),
+                    "Z_SCORE": float(indicators.get('z_score', 0.0)),
+                    "ADX": float(indicators.get('adx', 0.0))
+                },
+                "output": {
+                    "decision": ai_response['decision'],
+                    "confidence": float(ai_response['confidence']),
+                    "reasoning": ai_response['reasoning']
+                },
+                "weex_upload_failed": True  # Flag for manual retry later
+            }
+            
+            # Save to JSONL file (one JSON per line)
+            backup_file = os.path.join(self.backup_dir, 'ai_logs_backup.jsonl')
+            with open(backup_file, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+            
+            logger.info(f"💾 AI Log saved locally (backup): {backup_file}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save local backup: {e}")
+
     async def log_strategy_generation(self, strategy_config: Dict):
         """
         Optional: Log strategy generation for completeness
+        ✅ WITH FALLBACK
         """
         try:
             input_data = {
@@ -289,19 +343,40 @@ Respond now:"""
                 "trade execution for enhanced decision quality and compliance."
             )
             
-            await self.weex.upload_ai_log(
+            result = await self.weex.upload_ai_log(
                 orderId=None,
                 stage="Strategy Generation",
                 model=self.model_name,
                 input=input_data,
                 output=output_data,
-                explanation=explanation
+           
+            explanation=explanation
             )
             
-            logger.info("✅ Strategy generation logged")
-            
+            if result.get('code') == '00000':
+                logger.info("✅ Strategy generation logged to WEEX")
+            else:
+                raise Exception(f"Upload failed: {result}")
+                
         except Exception as e:
-            logger.error(f"Strategy log error: {e}")
+            logger.warning(f"⚠️ Strategy log upload failed: {e}")
+            
+            # ✅ FALLBACK: Save locally
+            log_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "stage": "Strategy Generation",
+                "model": self.model_name,
+                "input": input_data,
+                "output": output_data,
+                "explanation": explanation,
+                "weex_upload_failed": True
+            }
+            
+            backup_file = os.path.join(self.backup_dir, 'ai_logs_backup.jsonl')
+            with open(backup_file, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+            
+            logger.info(f"💾 Strategy log saved locally (backup)")
 
 
 __all__ = ['AILogger']
