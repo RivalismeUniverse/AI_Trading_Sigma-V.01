@@ -1,6 +1,12 @@
+# core/hybrid_engine.py
 """
-Hybrid Trading Engine - UPGRADED with REAL AI Validation
+Hybrid Trading Engine - FIXED VERSION with REAL AI Validation
 Now includes ETHICAL Gemini 3 Flash integration for compliance
+
+FIXES:
+- AILogger initialization (removed bedrock_client parameter)
+- WEEXClient passphrase handling
+- All imports corrected
 """
 
 import asyncio
@@ -26,8 +32,7 @@ from database.db_manager import DatabaseManager
 from utils.logger import setup_logger, compliance_logger
 from utils.constants import TradeAction
 
-# CRITICAL: Import REAL AI components
-from ai.bedrock_client import BedrockClient
+# ✅ FIXED: Correct AI imports
 from ai.ai_logger import AILogger
 
 logger = setup_logger(__name__)
@@ -37,7 +42,7 @@ class HybridTradingEngine:
     """
     Main autonomous trading engine - UPGRADED with ETHICAL AI
     
-    New in this version:
+    Features:
     - REAL Gemini 3 Flash validation before trades
     - Compliant AI logging (not post-hoc fabrication)
     - AI can veto signals (adds actual value)
@@ -72,8 +77,7 @@ class HybridTradingEngine:
         self.safety_checker = get_safety_checker()
         self.circuit_breaker = get_circuit_breaker()
         
-        # AI components (will initialize after exchange)
-        self.bedrock_client = None
+        # ✅ AI components (will initialize after exchange)
         self.ai_logger = None
         
         # State
@@ -88,7 +92,7 @@ class HybridTradingEngine:
         self.winning_trades = 0
         self.losing_trades = 0
         
-        logger.info("✅ Hybrid Trading Engine initialized (with REAL AI pending)")
+        logger.info("✅ Hybrid Trading Engine initialized")
     
     async def initialize(self):
         """Initialize trading engine with REAL AI"""
@@ -99,13 +103,13 @@ class HybridTradingEngine:
             exchange_config = get_exchange_config()
             
             if exchange_config['type'] == 'weex':
-                # ✅ FIXED: Pass passphrase to WEEXClient
+                # ✅ FIXED: Proper passphrase handling
                 self.exchange_client = WEEXClient(
                     api_key=exchange_config['api_key'],
                     api_secret=exchange_config['api_secret'],
-                    passphrase=exchange_config.get('passphrase'),  # ✅ ADDED
                     testnet=exchange_config['testnet'],
-                    base_url=exchange_config.get('base_url')
+                    base_url=exchange_config.get('base_url'),
+                    passphrase=exchange_config.get('passphrase')  # ✅ Pass explicitly
                 )
             elif exchange_config['type'] == 'binance':
                 self.exchange_client = BinanceClient(
@@ -118,29 +122,26 @@ class HybridTradingEngine:
             
             await self.exchange_client.initialize()
             
-            # CRITICAL: Initialize REAL AI components
-            logger.info("🤖 Initializing Gemini 3 Flash client...")
-            self.bedrock_client = BedrockClient()
-            await self.bedrock_client.initialize()
+            # ✅ FIXED: Initialize AI Logger (only needs weex_client)
+            logger.info("📝 Initializing AI Logger with Gemini 3 Flash...")
+            self.ai_logger = AILogger(weex_client=self.exchange_client)
             
-            logger.info("📝 Initializing ETHICAL AI Logger...")
-            self.ai_logger = AILogger(
-                weex_client=self.exchange_client,
-                bedrock_client=self.bedrock_client
-            )
+            # Start background AI log uploader
+            await self.ai_logger.start()
             
-            # Log strategy generation (one-time, for completeness)
+            # Log strategy generation (one-time)
             await self.ai_logger.log_strategy_generation({
                 'symbols': settings.ALLOWED_SYMBOLS,
                 'max_leverage': settings.DEFAULT_LEVERAGE,
-                'risk_per_trade': 0.02
+                'risk_per_trade': settings.MAX_RISK_PER_TRADE
             })
             
             # Set leverage for allowed symbols
             for symbol in settings.ALLOWED_SYMBOLS:
                 try:
                     await self.exchange_client.set_leverage(symbol, settings.DEFAULT_LEVERAGE)
-                except:
+                except Exception as e:
+                    logger.warning(f"Could not set leverage for {symbol}: {e}")
                     continue
             
             # Get initial balance
@@ -173,9 +174,6 @@ class HybridTradingEngine:
             logger.error(traceback.format_exc())
         finally:
             self.is_running = False
-            # Cleanup AI client
-            if self.bedrock_client:
-                await self.bedrock_client.close()
     
     async def stop(self):
         """Stop autonomous trading"""
@@ -184,8 +182,9 @@ class HybridTradingEngine:
         
         await self._close_all_positions()
         
-        if self.bedrock_client:
-            await self.bedrock_client.close()
+        # ✅ FIXED: Stop AI logger properly
+        if self.ai_logger:
+            await self.ai_logger.stop()
         
         if self.exchange_client:
             await self.exchange_client.close()
@@ -318,7 +317,7 @@ class HybridTradingEngine:
             logger.debug("Max open positions reached")
             return
         
-        # CRITICAL: REAL AI VALIDATION BEFORE PROCEEDING
+        # ✅ CRITICAL: REAL AI VALIDATION BEFORE PROCEEDING
         logger.info(f"🤖 Requesting Gemini 3 Flash validation for {symbol}...")
         
         ai_validation = await self.ai_logger.validate_signal_with_real_ai(
@@ -428,8 +427,27 @@ class HybridTradingEngine:
                 params={'leverage': settings.DEFAULT_LEVERAGE}
             )
             
-            # Note: AI Log already sent in validate_signal_with_real_ai()
-            # No post-hoc logging needed - we're fully compliant!
+            # ✅ Get order_id for AI logging
+            order_id = None
+            if order.get('code') == '200':
+                order_id = order.get('data', {}).get('order_id')
+            
+            # ✅ Log order execution WITH order_id
+            if order_id and self.ai_logger:
+                await self.ai_logger.log_order_execution(
+                    order_id=order_id,
+                    signal=signal,
+                    order_params={
+                        'amount': position_size,
+                        'order_type': 'MARKET',
+                        'leverage': settings.DEFAULT_LEVERAGE
+                    },
+                    execution_result={
+                        'success': True,
+                        'status': 'placed',
+                        'fill_price': signal['current_price']
+                    }
+                )
             
             # Create stop loss
             stop_side = 'sell' if action == TradeAction.ENTER_LONG else 'buy'
@@ -491,17 +509,14 @@ class HybridTradingEngine:
         """Advanced position management"""
         for symbol, position in list(self.open_positions.items()):
             try:
-                # Fetch current price
                 ticker = await self.exchange_client.fetch_ticker(symbol)
                 current_price = ticker['last']
                 
-                # Update highest/lowest
                 if current_price > position['highest_price']:
                     position['highest_price'] = current_price
                 if current_price < position['lowest_price']:
                     position['lowest_price'] = current_price
                 
-                # Fetch current OHLCV
                 df = await self.exchange_client.fetch_ohlcv(
                     symbol=symbol,
                     timeframe=settings.DEFAULT_TIMEFRAME,
@@ -511,19 +526,15 @@ class HybridTradingEngine:
                 if df is None or df.empty:
                     continue
                 
-                # Calculate indicators
                 signal = self.signal_manager.generate_signal(df, symbol)
                 indicators = signal['indicators']
                 
-                # Detect current regime
                 regime_result = self.regime_detector.detect(df, indicators)
                 current_regime = regime_result['regime']
                 
-                # Get balance
                 balance_data = await self.exchange_client.fetch_balance()
                 balance = balance_data['total']
                 
-                # Check dynamic exit conditions
                 should_exit, exit_reason, exit_details = self.exit_manager.should_exit(
                     position=position,
                     current_price=current_price,
@@ -540,7 +551,6 @@ class HybridTradingEngine:
                     )
                     continue
                 
-                # Check if position still exists on exchange
                 exchange_positions = await self.exchange_client.fetch_positions(symbol)
                 if not exchange_positions or all(float(p.get('contracts', 0)) == 0 for p in exchange_positions):
                     await self._close_position_record(symbol, position, "stop_loss_exchange")
@@ -565,11 +575,9 @@ class HybridTradingEngine:
             return
         
         try:
-            # Fetch final price
             ticker = await self.exchange_client.fetch_ticker(symbol)
             exit_price = ticker['last']
             
-            # Calculate P&L
             entry_price = position['entry_price']
             size = position['position_size']
             side = position['side']
@@ -591,7 +599,6 @@ class HybridTradingEngine:
                 f"P&L: ${pnl:.2f} | Reason: {reason}"
             )
             
-            # Remove from open positions
             del self.open_positions[symbol]
             
         except Exception as e:
@@ -611,7 +618,6 @@ class HybridTradingEngine:
             balance = await self.exchange_client.fetch_balance()
             current_balance = balance['total']
             
-            # Record for safety checker
             self.safety_checker.record_trade({
                 'pnl': current_balance - self.last_balance
             })
@@ -629,10 +635,8 @@ class HybridTradingEngine:
             except:
                 pass
         
-        # Get expectancy summary
         expectancy_summary = self.expectancy_engine.get_performance_summary()
         
-        # Get portfolio exposure
         portfolio_exposure = {}
         if self.open_positions:
             portfolio_exposure = self.portfolio_risk.get_portfolio_exposure_breakdown(
@@ -652,7 +656,7 @@ class HybridTradingEngine:
             'uptime': (datetime.utcnow() - self.start_time).total_seconds() if self.start_time else 0,
             'expectancy_metrics': expectancy_summary,
             'portfolio_exposure': portfolio_exposure,
-            'ai_validation_active': self.bedrock_client is not None
+            'ai_validation_active': self.ai_logger is not None
         }
     
     async def get_balance(self) -> Dict:
