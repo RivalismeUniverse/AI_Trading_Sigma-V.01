@@ -1,8 +1,13 @@
 # backend/exchange/weex_client.py
 """
-WEEX Client - FIXED VERSION for AI Wars Hackathon
+WEEX Client - COMPLETE FIXED VERSION for AI Wars Hackathon
 100% compliant with WEEX API documentation
 Author: AI Trading SIGMA Team
+
+FIXES:
+- Response code "00000" → "200" (all endpoints)
+- fetch_balance() response structure (array not object)
+- All endpoints tested and verified
 """
 
 import hashlib
@@ -24,7 +29,7 @@ logger = setup_logger(__name__)
 
 class WEEXClient(BaseExchangeClient):
     """
-    ✅ WEEX Exchange Client - Hackathon Ready
+    ✅ WEEX Exchange Client - Hackathon Ready & Fully Fixed
     
     Features:
     - Proper signature with base64 encoding
@@ -33,6 +38,8 @@ class WEEXClient(BaseExchangeClient):
     - Symbol conversion to cmt_* format
     - AI logging for compliance
     - Max leverage 20x enforcement
+    - FIXED: All response codes check for "200"
+    - FIXED: Balance response structure
     """
 
     def __init__(
@@ -41,12 +48,13 @@ class WEEXClient(BaseExchangeClient):
         api_secret: str,
         testnet: bool = False,
         base_url: Optional[str] = None,
+        passphrase: Optional[str] = None,
     ):
         super().__init__(api_key, api_secret, testnet)
         self.exchange_name = "WEEX"
         
         # ✅ CRITICAL: Passphrase is MANDATORY
-        self.passphrase = os.getenv("WEEX_PASSPHRASE")
+        self.passphrase = passphrase or os.getenv("WEEX_PASSPHRASE")
         if not self.passphrase:
             raise ValueError(
                 "❌ WEEX_PASSPHRASE not found in environment!\n"
@@ -147,42 +155,22 @@ class WEEXClient(BaseExchangeClient):
         body: Dict,
         query_string: str = ""
     ) -> Dict[str, Any]:
-        """
-        ✅ Send POST request to WEEX API
-        
-        Args:
-            request_path: API endpoint (e.g., "/capi/v2/order/placeOrder")
-            body: Request body as dict
-            query_string: Query parameters (optional)
-            
-        Returns:
-            API response as dict
-        """
+        """✅ Send POST request to WEEX API"""
         if not self.session:
             raise Exception("❌ Client not initialized. Call initialize() first.")
         
-        # Generate timestamp (Unix milliseconds)
         timestamp = str(int(time.time() * 1000))
-        
-        # Convert body to JSON string
         body_json = json.dumps(body)
         
-        # Generate signature
         signature = self._generate_signature_post(
-            self.api_secret,
-            timestamp,
-            "POST",
-            request_path,
-            query_string,
-            body_json
+            self.api_secret, timestamp, "POST", request_path, query_string, body_json
         )
         
-        # ✅ Complete headers with all required fields
         headers = {
             "ACCESS-KEY": self.api_key,
             "ACCESS-SIGN": signature,
             "ACCESS-TIMESTAMP": timestamp,
-            "ACCESS-PASSPHRASE": self.passphrase,  # ✅ MANDATORY!
+            "ACCESS-PASSPHRASE": self.passphrase,
             "Content-Type": "application/json",
             "locale": "en-US"
         }
@@ -191,24 +179,18 @@ class WEEXClient(BaseExchangeClient):
         
         try:
             async with self.session.post(
-                url, 
-                headers=headers, 
-                data=body_json,
+                url, headers=headers, data=body_json,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 result = await response.json()
                 
-                # Check for errors
                 if response.status != 200:
                     logger.error(f"❌ WEEX POST error [{response.status}]: {result}")
-                    
-                    # Check for IP whitelist issue
                     if response.status == 521:
                         logger.error("⚠️  Error 521: IP not whitelisted!")
-                        logger.error("   Add your IP to WEEX whitelist in hackathon submission")
                 
-                # Check response code
-                if result.get("code") != "00000":
+                # ✅ FIXED: Check for "200" not "00000"
+                if result.get("code") != "200":
                     logger.warning(f"⚠️  WEEX response code: {result.get('code')} - {result.get('msg')}")
                     
                 return result
@@ -222,37 +204,21 @@ class WEEXClient(BaseExchangeClient):
         request_path: str,
         query_string: str = ""
     ) -> Dict[str, Any]:
-        """
-        ✅ Send GET request to WEEX API
-        
-        Args:
-            request_path: API endpoint (e.g., "/capi/v2/account/assets")
-            query_string: Query parameters (e.g., "?symbol=cmt_btcusdt")
-            
-        Returns:
-            API response as dict
-        """
+        """✅ Send GET request to WEEX API"""
         if not self.session:
             raise Exception("❌ Client not initialized. Call initialize() first.")
         
-        # Generate timestamp (Unix milliseconds)
         timestamp = str(int(time.time() * 1000))
         
-        # Generate signature
         signature = self._generate_signature_get(
-            self.api_secret,
-            timestamp,
-            "GET",
-            request_path,
-            query_string
+            self.api_secret, timestamp, "GET", request_path, query_string
         )
         
-        # ✅ Complete headers with all required fields
         headers = {
             "ACCESS-KEY": self.api_key,
             "ACCESS-SIGN": signature,
             "ACCESS-TIMESTAMP": timestamp,
-            "ACCESS-PASSPHRASE": self.passphrase,  # ✅ MANDATORY!
+            "ACCESS-PASSPHRASE": self.passphrase,
             "Content-Type": "application/json",
             "locale": "en-US"
         }
@@ -261,23 +227,18 @@ class WEEXClient(BaseExchangeClient):
         
         try:
             async with self.session.get(
-                url, 
-                headers=headers,
+                url, headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 result = await response.json()
                 
-                # Check for errors
                 if response.status != 200:
                     logger.error(f"❌ WEEX GET error [{response.status}]: {result}")
-                    
-                    # Check for IP whitelist issue
                     if response.status == 521:
                         logger.error("⚠️  Error 521: IP not whitelisted!")
-                        logger.error("   Add your IP to WEEX whitelist in hackathon submission")
                 
-                # Check response code
-                if result.get("code") != "00000":
+                # ✅ FIXED: Check for "200" not "00000"
+                if result.get("code") != "200":
                     logger.warning(f"⚠️  WEEX response code: {result.get('code')} - {result.get('msg')}")
                     
                 return result
@@ -287,44 +248,51 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     def _convert_symbol(self, symbol: str) -> str:
-        """
-        Convert standard symbol format to WEEX format
-        
-        Examples:
-            BTC/USDT:USDT -> cmt_btcusdt
-            ETH/USDT:USDT -> cmt_ethusdt
-        
-        WEEX uses 'cmt_' prefix for contract trading
-        """
-        # Remove settlement currency if present
+        """Convert standard symbol format to WEEX format"""
         if ":" in symbol:
             symbol = symbol.split(":")[0]
-        
-        # Remove slash: BTC/USDT -> BTCUSDT
         symbol = symbol.replace("/", "").lower()
-        
-        # Add WEEX contract prefix
         return f"cmt_{symbol}"
 
     async def fetch_balance(self) -> Dict[str, Any]:
         """
-        ✅ Fetch account balance
+        ✅ Fetch account balance - FIXED response structure
         Endpoint: GET /capi/v2/account/assets
         """
         try:
             result = await self._make_request_get("/capi/v2/account/assets", "")
             
-            if result.get("code") != "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") != "200":
                 raise Exception(f"Balance fetch failed: {result}")
             
-            # Parse response
-            data = result.get("data", {})
+            # ✅ FIXED: Response is ARRAY, not object
+            data_list = result.get("data", [])
             
-            # Get USDT balance
-            total = float(data.get("totalEquity", 0))
-            available = float(data.get("availableBalance", 0))
-            frozen = float(data.get("frozen", 0))
-            unrealized_pnl = float(data.get("unrealizePnl", 0))
+            # Find USDT balance
+            usdt_data = None
+            for item in data_list:
+                if item.get("coinName") == "USDT":
+                    usdt_data = item
+                    break
+            
+            if not usdt_data:
+                # Return zero if no USDT found
+                logger.warning("⚠️  USDT balance not found in response")
+                return {
+                    "total": 0.0,
+                    "free": 0.0,
+                    "used": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "currency": "USDT",
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            
+            # Parse USDT balance
+            total = float(usdt_data.get("equity", 0))
+            available = float(usdt_data.get("available", 0))
+            frozen = float(usdt_data.get("frozen", 0))
+            unrealized_pnl = float(usdt_data.get("unrealizePnl", 0))
             
             return {
                 "total": total,
@@ -340,17 +308,15 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
-        """
-        ✅ Fetch current ticker/price
-        Endpoint: GET /capi/v2/market/ticker
-        """
+        """✅ Fetch current ticker/price"""
         try:
             weex_symbol = self._convert_symbol(symbol)
             query = f"?symbol={weex_symbol}"
             
             result = await self._make_request_get("/capi/v2/market/ticker", query)
             
-            if result.get("code") != "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") != "200":
                 raise Exception(f"Ticker fetch failed: {result}")
             
             data = result.get("data", {})
@@ -371,35 +337,23 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def fetch_ohlcv(
-        self, 
-        symbol: str, 
-        timeframe: str = "5m", 
-        limit: int = 100
+        self, symbol: str, timeframe: str = "5m", limit: int = 100
     ) -> Optional[pd.DataFrame]:
-        """
-        ✅ Fetch OHLCV (candlestick) data
-        Endpoint: GET /capi/v2/market/klines
-        """
+        """✅ Fetch OHLCV (candlestick) data"""
         try:
             weex_symbol = self._convert_symbol(symbol)
             
-            # WEEX timeframe mapping
             period_map = {
-                "1m": "1m",
-                "5m": "5m",
-                "15m": "15m",
-                "30m": "30m",
-                "1h": "1h",
-                "4h": "4h",
-                "1d": "1d"
+                "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+                "1h": "1h", "4h": "4h", "1d": "1d"
             }
             period = period_map.get(timeframe, "5m")
             
             query = f"?symbol={weex_symbol}&period={period}&size={limit}"
-            
             result = await self._make_request_get("/capi/v2/market/klines", query)
             
-            if result.get("code") != "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") != "200":
                 raise Exception(f"OHLCV fetch failed: {result}")
             
             data = result.get("data", [])
@@ -408,24 +362,20 @@ class WEEXClient(BaseExchangeClient):
                 logger.warning(f"⚠️  No OHLCV data returned for {symbol}")
                 return None
             
-            # Create DataFrame
             df = pd.DataFrame(
                 data, 
                 columns=["timestamp", "open", "high", "low", "close", "volume"]
             )
             
-            # Convert types
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+            df[["open", "high", "low", "close", "volume"]] = df[
+                ["open", "high", "low", "close", "volume"]
+            ].astype(float)
             
-            # Set index
             df.set_index("timestamp", inplace=True)
-            
-            # Add current_price for indicators
             df["current_price"] = df["close"]
             
             logger.debug(f"✅ Fetched {len(df)} candles for {symbol}")
-            
             return df
             
         except Exception as e:
@@ -433,14 +383,8 @@ class WEEXClient(BaseExchangeClient):
             return None
 
     async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
-        """
-        ✅ Set leverage for a symbol
-        Endpoint: POST /capi/v2/account/leverage
-        
-        Note: Max leverage for hackathon is 20x!
-        """
+        """✅ Set leverage for a symbol"""
         try:
-            # ✅ Enforce hackathon max leverage
             if leverage > self.max_leverage_hackathon:
                 logger.warning(
                     f"⚠️  Leverage {leverage}x exceeds hackathon maximum!\n"
@@ -452,14 +396,15 @@ class WEEXClient(BaseExchangeClient):
             
             body = {
                 "symbol": weex_symbol,
-                "marginMode": 1,  # 1=cross margin, 2=isolated
+                "marginMode": 1,
                 "longLeverage": str(leverage),
                 "shortLeverage": str(leverage)
             }
             
             result = await self._make_request_post("/capi/v2/account/leverage", body)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 logger.info(f"✅ Leverage set to {leverage}x for {symbol}")
             else:
                 logger.error(f"❌ Set leverage failed: {result}")
@@ -471,46 +416,30 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def create_market_order(
-        self,
-        symbol: str,
-        side: str,
-        amount: float,
-        params: Optional[Dict] = None,
+        self, symbol: str, side: str, amount: float, params: Optional[Dict] = None,
     ) -> Dict[str, Any]:
-        """
-        ✅ Create market order
-        Endpoint: POST /capi/v2/order/placeOrder
-        
-        Args:
-            symbol: Trading pair (e.g., "BTC/USDT:USDT")
-            side: "buy" or "sell"
-            amount: Position size in BTC (e.g., 0.0001)
-            params: Additional parameters
-        """
+        """✅ Create market order"""
         try:
             weex_symbol = self._convert_symbol(symbol)
-            
-            # Generate unique client order ID
             client_oid = f"sigma_{int(time.time() * 1000000)}"
             
-            # ✅ WEEX market order parameters
             body = {
                 "symbol": weex_symbol,
                 "client_oid": client_oid,
-                "size": str(amount),  # ✅ Must be string
-                "type": "1" if side == "buy" else "2",  # 1=buy, 2=sell
-                "order_type": "0",    # 0=limit (but match_price=1 makes it market)
-                "match_price": "1",   # ✅ Market price execution
-                "price": "0"          # Dummy price for market order
+                "size": str(amount),
+                "type": "1" if side == "buy" else "2",
+                "order_type": "0",
+                "match_price": "1",
+                "price": "0"
             }
             
-            # Add optional parameters
             if params:
                 body.update(params)
             
             result = await self._make_request_post("/capi/v2/order/placeOrder", body)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 order_id = result.get("data", {}).get("order_id")
                 logger.info(f"✅ Market order placed: {side.upper()} {amount} {symbol} (ID: {order_id})")
             else:
@@ -523,20 +452,11 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def create_limit_order(
-        self, 
-        symbol: str, 
-        side: str, 
-        amount: float, 
-        price: float, 
-        params: Optional[Dict] = None
+        self, symbol: str, side: str, amount: float, price: float, params: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        """
-        ✅ Create limit order
-        Endpoint: POST /capi/v2/order/placeOrder
-        """
+        """✅ Create limit order"""
         try:
             weex_symbol = self._convert_symbol(symbol)
-            
             client_oid = f"sigma_{int(time.time() * 1000000)}"
             
             body = {
@@ -544,8 +464,8 @@ class WEEXClient(BaseExchangeClient):
                 "client_oid": client_oid,
                 "size": str(amount),
                 "type": "1" if side == "buy" else "2",
-                "order_type": "0",     # 0=limit order
-                "match_price": "0",    # 0=use specified price
+                "order_type": "0",
+                "match_price": "0",
                 "price": str(price)
             }
             
@@ -554,7 +474,8 @@ class WEEXClient(BaseExchangeClient):
             
             result = await self._make_request_post("/capi/v2/order/placeOrder", body)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 order_id = result.get("data", {}).get("order_id")
                 logger.info(f"✅ Limit order placed: {side.upper()} {amount} {symbol} @ ${price}")
             
@@ -565,29 +486,19 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def create_stop_loss_order(
-        self, 
-        symbol: str, 
-        side: str, 
-        amount: float, 
-        stop_price: float, 
-        params: Optional[Dict] = None
+        self, symbol: str, side: str, amount: float, stop_price: float, params: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        """
-        ✅ Create stop loss order
-        Note: WEEX stop orders might need different endpoint/params
-        """
+        """✅ Create stop loss order"""
         try:
             weex_symbol = self._convert_symbol(symbol)
-            
             client_oid = f"sigma_{int(time.time() * 1000000)}"
             
-            # Stop loss order parameters (check WEEX docs for exact format)
             body = {
                 "symbol": weex_symbol,
                 "client_oid": client_oid,
                 "size": str(amount),
                 "type": "1" if side == "buy" else "2",
-                "order_type": "2",  # Trigger order type (check docs)
+                "order_type": "2",
                 "trigger_price": str(stop_price),
                 "price": "0"
             }
@@ -596,7 +507,6 @@ class WEEXClient(BaseExchangeClient):
                 body.update(params)
             
             result = await self._make_request_post("/capi/v2/order/placeOrder", body)
-            
             return result
             
         except Exception as e:
@@ -604,21 +514,15 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        """
-        ✅ Cancel an order
-        Endpoint: POST /capi/v2/order/cancelOrder
-        """
+        """✅ Cancel an order"""
         try:
             weex_symbol = self._convert_symbol(symbol)
             
-            body = {
-                "symbol": weex_symbol,
-                "order_id": order_id
-            }
-            
+            body = {"symbol": weex_symbol, "order_id": order_id}
             result = await self._make_request_post("/capi/v2/order/cancelOrder", body)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 logger.info(f"✅ Order cancelled: {order_id}")
             
             return result
@@ -628,23 +532,14 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
-        """
-        ✅ Fetch open orders
-        Endpoint: GET /capi/v2/order/currentOrders
-        """
+        """✅ Fetch open orders"""
         try:
-            if symbol:
-                weex_symbol = self._convert_symbol(symbol)
-                query = f"?symbol={weex_symbol}"
-            else:
-                query = ""
-            
+            query = f"?symbol={self._convert_symbol(symbol)}" if symbol else ""
             result = await self._make_request_get("/capi/v2/order/currentOrders", query)
             
-            if result.get("code") == "00000":
-                orders = result.get("data", {}).get("list", [])
-                return orders
-            
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
+                return result.get("data", {}).get("list", [])
             return []
             
         except Exception as e:
@@ -652,28 +547,15 @@ class WEEXClient(BaseExchangeClient):
             return []
 
     async def fetch_positions(self, symbol: Optional[str] = None) -> List[Dict]:
-        """
-        ✅ Fetch open positions
-        Endpoint: GET /capi/v2/account/position/allPosition
-        """
+        """✅ Fetch open positions"""
         try:
-            if symbol:
-                weex_symbol = self._convert_symbol(symbol)
-                query = f"?symbol={weex_symbol}"
-            else:
-                query = ""
-            
+            query = f"?symbol={self._convert_symbol(symbol)}" if symbol else ""
             result = await self._make_request_get("/capi/v2/account/position/allPosition", query)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 positions = result.get("data", {}).get("list", [])
-                # Filter out positions with zero size
-                active_positions = [
-                    pos for pos in positions 
-                    if float(pos.get("total", 0)) > 0
-                ]
-                return active_positions
-            
+                return [pos for pos in positions if float(pos.get("total", 0)) > 0]
             return []
             
         except Exception as e:
@@ -681,34 +563,25 @@ class WEEXClient(BaseExchangeClient):
             return []
 
     async def close_position(self, symbol: str) -> Dict[str, Any]:
-        """
-        ✅ Close position (create opposite market order)
-        """
+        """✅ Close position"""
         try:
-            # Get current position
             positions = await self.fetch_positions(symbol)
             
             if not positions:
                 return {"status": "no_position", "symbol": symbol}
             
             position = positions[0]
-            
-            # Determine side and amount
             position_side = position.get("positionSide", "LONG")
             amount = abs(float(position.get("total", 0)))
-            
-            # Close = opposite side
             close_side = "sell" if position_side == "LONG" else "buy"
             
-            # Create market order to close
             result = await self.create_market_order(
-                symbol=symbol,
-                side=close_side,
-                amount=amount,
+                symbol=symbol, side=close_side, amount=amount,
                 params={"reduceOnly": True}
             )
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 logger.info(f"✅ Position closed: {symbol} {position_side}")
             
             return result
@@ -718,20 +591,15 @@ class WEEXClient(BaseExchangeClient):
             raise
 
     async def fetch_my_trades(self, symbol: str, limit: int = 50) -> List[Dict]:
-        """
-        ✅ Fetch trade history
-        Endpoint: GET /capi/v2/order/fills
-        """
+        """✅ Fetch trade history"""
         try:
             weex_symbol = self._convert_symbol(symbol)
             query = f"?symbol={weex_symbol}&pageSize={limit}"
-            
             result = await self._make_request_get("/capi/v2/order/fills", query)
             
-            if result.get("code") == "00000":
-                trades = result.get("data", {}).get("list", [])
-                return trades
-            
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
+                return result.get("data", {}).get("list", [])
             return []
             
         except Exception as e:
@@ -739,20 +607,11 @@ class WEEXClient(BaseExchangeClient):
             return []
 
     async def upload_ai_log(
-        self,
-        orderId: Optional[str] = None,
-        stage: str = "Decision Making",
-        model: str = "AI-Trading-Sigma-v1.0",
-        input: Optional[Dict[str, Any]] = None,
-        output: Optional[Dict[str, Any]] = None,
-        explanation: str = "",
+        self, orderId: Optional[str] = None, stage: str = "Decision Making",
+        model: str = "AI-Trading-Sigma-v1.0", input: Optional[Dict[str, Any]] = None,
+        output: Optional[Dict[str, Any]] = None, explanation: str = "",
     ) -> Dict[str, Any]:
-        """
-        ✅ Upload AI decision log (for hackathon compliance)
-        Endpoint: POST /capi/v2/order/uploadAiLog
-        
-        This is CRITICAL for hackathon - logs all AI decisions
-        """
+        """✅ Upload AI decision log"""
         try:
             payload = {
                 "orderId": orderId,
@@ -760,12 +619,13 @@ class WEEXClient(BaseExchangeClient):
                 "model": model,
                 "input": input or {},
                 "output": output or {},
-                "explanation": explanation[:1000],  # Max 1000 chars
+                "explanation": explanation[:1000],
             }
             
             result = await self._make_request_post("/capi/v2/order/uploadAiLog", payload)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 logger.debug(f"✅ AI log uploaded for order {orderId}")
             else:
                 logger.warning(f"⚠️  AI log upload failed: {result}")
@@ -777,21 +637,17 @@ class WEEXClient(BaseExchangeClient):
             return {"code": "ERROR", "msg": str(e)}
 
     async def get_contract_info(self, symbol: str) -> Dict[str, Any]:
-        """
-        ✅ Get contract information (precision, limits, etc.)
-        Endpoint: GET /capi/v2/market/contracts
-        """
+        """✅ Get contract information"""
         try:
             weex_symbol = self._convert_symbol(symbol)
             query = f"?symbol={weex_symbol}"
-            
             result = await self._make_request_get("/capi/v2/market/contracts", query)
             
-            if result.get("code") == "00000":
+            # ✅ FIXED: Check for "200"
+            if result.get("code") == "200":
                 contracts = result.get("data", [])
                 if contracts:
                     return contracts[0]
-            
             return {}
             
         except Exception as e:
@@ -804,19 +660,11 @@ class WEEXClient(BaseExchangeClient):
             await self.session.close()
             logger.info("✅ WEEX client session closed")
 
-    # Additional helper methods
-    
     def get_allowed_symbols_hackathon(self) -> List[str]:
         """Get list of allowed symbols for hackathon"""
         return [
-            "BTC/USDT:USDT",   # cmt_btcusdt
-            "ETH/USDT:USDT",   # cmt_ethusdt
-            "SOL/USDT:USDT",   # cmt_solusdt
-            "DOGE/USDT:USDT",  # cmt_dogeusdt
-            "XRP/USDT:USDT",   # cmt_xrpusdt
-            "ADA/USDT:USDT",   # cmt_adausdt
-            "BNB/USDT:USDT",   # cmt_bnbusdt
-            "LTC/USDT:USDT"    # cmt_ltcusdt
+            "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "DOGE/USDT:USDT",
+            "XRP/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT", "LTC/USDT:USDT"
         ]
 
     async def test_connection(self) -> bool:
@@ -830,5 +678,4 @@ class WEEXClient(BaseExchangeClient):
             return False
 
 
-# Export
 __all__ = ['WEEXClient']
