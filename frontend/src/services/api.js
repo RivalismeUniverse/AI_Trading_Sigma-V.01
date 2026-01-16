@@ -9,7 +9,7 @@ import axios from 'axios';
 // Pencarian URL Backend otomatis:
 // 1. Cek Environment Variable Vercel (REACT_APP_API_URL)
 // 2. Kalau gak ada, pakai link Railway kamu langsung
-const API_URL = process.env.REACT_APP_API_URL || 'https://aitradingsigma-v01-awsaccesskeyid.up.railway.app';
+const API_URL = process.env.REACT_APP_API_URL || 'http://3.236.117.108:8000';
 
 const api = axios.create({
   baseURL: API_URL,
