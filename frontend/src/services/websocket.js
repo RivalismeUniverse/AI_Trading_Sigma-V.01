@@ -6,7 +6,7 @@
 
 // Fungsi untuk mengubah URL HTTPS Railway menjadi WSS secara otomatis
 const getWsUrl = () => {
-  const envUrl = process.env.REACT_APP_WS_URL || process.env.REACT_APP_API_URL || 'https://aitradingsigma-v01-awsaccesskeyid.up.railway.app';
+  const envUrl = process.env.REACT_APP_WS_URL || process.env.REACT_APP_API_URL || 'ws://3.236.117.108:8000';
   
   // Jika URL mengandung http/https, ganti jadi ws/wss
   if (envUrl.startsWith('http')) {
